@@ -634,7 +634,6 @@ function smartWarn(txt) {
           <Pressable
             style={styles.shopFloatingBtn}
             onPress={() => {
-              setMode("SHOP");
               setLoginOpen(true);
             }}
           >
