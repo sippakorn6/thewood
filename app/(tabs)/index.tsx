@@ -44,7 +44,6 @@ const THEME = {
   soft: "#EAF4FF",
   primary: "#5AA9FF",
   primary2: "#2E7DFF",
-  accent: "#7C3AED",
   ok: "#1FBF75",
   warn: "#FFB020",
   danger: "#FF4D4D",
@@ -158,7 +157,11 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPass, setLoginPass] = useState("");
 
-  // Picker modal
+  
+  // Web UX: stop shop polling while typing (prevents flicker)
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimerRef = useRef(null);
+// Picker modal
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickedMenu, setPickedMenu] = useState(null);
 
@@ -270,6 +273,7 @@ export default function App() {
 
     async function tickShop() {
       if (mode !== "SHOP" || !shopLoggedIn) return;
+      if (isTyping) return;
       try {
         const { data, error } = await supabase
           .from("orders")
@@ -297,7 +301,7 @@ export default function App() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [mode, shopLoggedIn]);
+  }, [mode, shopLoggedIn, isTyping]);
 
   function calcFinalPrice({ base, cat, protein, noodleSize }) {
     let price = Number(base || 0);
@@ -708,25 +712,23 @@ export default function App() {
           }
         />
 
-        <View style={styles.categoryBar}>
-          <FlatList
-            data={categories}
-            keyExtractor={(x) => x}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            keyboardShouldPersistTaps="always"
-            contentContainerStyle={styles.categoryBarContent}
-            renderItem={({ item: c }) => (
-              <Chip label={c} active={category === c} onPress={() => setCategory(c)} />
-            )}
-          />
-        </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginTop: 10 }}
+          keyboardShouldPersistTaps="always"
+         keyboardDismissMode="none">
+          <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 14 }}>
+            {categories.map((c) => (
+              <Chip key={c} label={c} active={category === c} onPress={() => setCategory(c)} />
+            ))}
+          </View>
+        </ScrollView>
 
         <FlatList
           data={filteredMenu}
           keyExtractor={(x) => String(x.id)}
           keyboardShouldPersistTaps="always"
-          keyboardDismissMode="none"
           contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
           renderItem={({ item }) => <MenuCard item={item} />}
           ListEmptyComponent={
@@ -1195,7 +1197,7 @@ export default function App() {
       <Modal visible={pickerOpen} transparent animationType="fade">
         <View style={styles.modalBack}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="always">
+            <ScrollView keyboardShouldPersistTaps="always" keyboardDismissMode="none">
               <Text style={styles.modalTitle}>
                 {cat === "ก๋วยเตี๋ยว" ? "🍜 " : cat === "อาหาร" ? "🍛 " : "🥤 "}
                 {pickedMenu.name}
@@ -1295,13 +1297,18 @@ export default function App() {
       <Modal visible={loginOpen} transparent animationType="fade">
         <View style={styles.modalBack}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="always">
+            <ScrollView keyboardShouldPersistTaps="always" keyboardDismissMode="none">
               <Text style={styles.modalTitle}>🔐 เข้าสู่ระบบร้านค้า</Text>
               <Text style={styles.modalSub}>ใส่อีเมลและรหัสผ่าน</Text>
 
               <TextInput
                 value={loginEmail}
-                onChangeText={setLoginEmail}
+                onChangeText={(t) => {
+                  setLoginEmail(t);
+                  setIsTyping(true);
+                  if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+                  typingTimerRef.current = setTimeout(() => setIsTyping(false), 800);
+                }}
                 placeholder="อีเมล"
                 placeholderTextColor="rgba(11,34,48,0.35)"
                 style={styles.input}
@@ -1312,7 +1319,12 @@ export default function App() {
 
               <TextInput
                 value={loginPass}
-                onChangeText={setLoginPass}
+                onChangeText={(t) => {
+                  setLoginPass(t);
+                  setIsTyping(true);
+                  if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+                  typingTimerRef.current = setTimeout(() => setIsTyping(false), 800);
+                }}
                 placeholder="รหัสผ่าน"
                 placeholderTextColor="rgba(11,34,48,0.35)"
                 style={styles.input}
@@ -1355,7 +1367,7 @@ export default function App() {
 
             <View style={{ height: 10 }} />
 
-            <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="always">
+            <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
               {items.length === 0 ? (
                 <Text style={{ color: THEME.sub }}>ไม่มีรายการ</Text>
               ) : (
@@ -1399,7 +1411,7 @@ export default function App() {
       <Modal visible={addMenuOpen} transparent animationType="fade">
         <View style={styles.modalBack}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="always">
+            <ScrollView keyboardShouldPersistTaps="always" keyboardDismissMode="none">
               <Text style={styles.modalTitle}>➕ เพิ่มเมนูใหม่</Text>
               <Text style={styles.modalSub}>ใส่ข้อมูลให้ครบ (เก็บใน Supabase)</Text>
 
@@ -1599,20 +1611,10 @@ const styles = StyleSheet.create({
     borderColor: THEME.line,
   },
   chipIdle: { backgroundColor: THEME.soft },
-  chipActive: { backgroundColor: THEME.accent },
+  chipActive: { backgroundColor: THEME.primary2 },
   chipText: { fontWeight: "900" },
   chipTextIdle: { color: THEME.text },
   chipTextActive: { color: "#fff" },
-
-
-  categoryBar: {
-    marginTop: 10,
-    paddingBottom: 8,
-  },
-  categoryBarContent: {
-    paddingHorizontal: 14,
-    gap: 8,
-  },
 
   input: {
     marginTop: 10,
