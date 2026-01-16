@@ -173,11 +173,15 @@ export default function App() {
 
   // Shop preview modal (new order)
   const [shopPreviewOpen, setShopPreviewOpen] = useState(false);
-  const [shopPreviewOrder, setShopPreviewOrder] = useState(null);
+const [shopPreviewOrder, setShopPreviewOrder] = useState(null);
 
   // Add menu modal
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [mName, setMName] = useState("");
+  
+
+  // Stop polling while any modal is open (prevents web flicker + input losing focus)
+  const stopPolling = loginOpen || pickerOpen || addMenuOpen || shopPreviewOpen || isTyping;
+const [mName, setMName] = useState("");
   const [mDesc, setMDesc] = useState("");
   const [mCategory, setMCategory] = useState("อาหาร");
   const [mPrice, setMPrice] = useState("");
@@ -186,7 +190,23 @@ export default function App() {
 
   const lastSeenNewIdsRef = useRef(new Set());
 
-  function smartWarn(txt) {
+  
+
+  function sameOrderList(a, b) {
+    try {
+      if (!Array.isArray(a) || !Array.isArray(b)) return false;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if ((a[i]?.order_id || "") !== (b[i]?.order_id || "")) return false;
+        if ((a[i]?.status || "") !== (b[i]?.status || "")) return false;
+        if (Number(a[i]?.created_at_ms || 0) !== Number(b[i]?.created_at_ms || 0)) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+function smartWarn(txt) {
     const s = (txt || "").toLowerCase();
     const bad = ["แพ้", "ห้าม", "ไม่เอา", "ถั่ว", "กุ้ง", "นม", "ไข่"];
     setNoteWarn(bad.some((w) => s.includes(w)));
@@ -273,7 +293,7 @@ export default function App() {
 
     async function tickShop() {
       if (mode !== "SHOP" || !shopLoggedIn) return;
-      if (isTyping) return;
+      if (stopPolling) return;
       try {
         const { data, error } = await supabase
           .from("orders")
@@ -282,7 +302,7 @@ export default function App() {
         if (error) throw error;
 
         const list = Array.isArray(data) ? data : [];
-        setOrders(list);
+        setOrders((prev) => (sameOrderList(prev, list) ? prev : list));
 
         const newOrders = list.filter((o) => o.status === "NEW");
         const seen = lastSeenNewIdsRef.current;
@@ -301,7 +321,7 @@ export default function App() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [mode, shopLoggedIn, isTyping]);
+  }, [mode, shopLoggedIn, stopPolling]);
 
   function calcFinalPrice({ base, cat, protein, noodleSize }) {
     let price = Number(base || 0);
@@ -879,7 +899,6 @@ export default function App() {
                 setTab("MENU");
               }}
             >
-              <Text style={styles.btnSoftText}>🧼 เริ่มรอบใหม่ (ล้างหน้าจอคนนี้)</Text>
             </Pressable>
           </View>
         </ScrollView>
