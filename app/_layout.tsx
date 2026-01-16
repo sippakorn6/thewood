@@ -1,6 +1,12 @@
 import React from "react";
-import { Stack } from "expo-router";
+import { Tabs } from "expo-router";
 
-export default function RootLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+export default function TabsLayout() {
+  return (
+    <Tabs screenOptions={{ headerShown: false }}>
+      <Tabs.Screen name="index" options={{ title: "หน้าแรก" }} />
+      <Tabs.Screen name="cart" options={{ title: "ตะกร้า" }} />
+      <Tabs.Screen name="status" options={{ title: "สถานะ" }} />
+    </Tabs>
+  );
 }

@@ -206,7 +206,13 @@ const [mName, setMName] = useState("");
       return false;
     }
   }
-function smartWarn(txt) {
+function markTyping() {
+    setIsTyping(true);
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => setIsTyping(false), 700);
+  }
+
+  function smartWarn(txt) {
     const s = (txt || "").toLowerCase();
     const bad = ["แพ้", "ห้าม", "ไม่เอา", "ถั่ว", "กุ้ง", "นม", "ไข่"];
     setNoteWarn(bad.some((w) => s.includes(w)));
@@ -292,7 +298,7 @@ function smartWarn(txt) {
     let timer = null;
 
     async function tickShop() {
-      if (mode !== "SHOP" || !shopLoggedIn) return;
+      if (mode !== "SHOP" || !shopLoggedIn || stopPolling) return;
       if (stopPolling) return;
       try {
         const { data, error } = await supabase
@@ -537,31 +543,14 @@ function smartWarn(txt) {
       if (!price || price <= 0) return Alert.alert("ราคาไม่ถูก", "ใส่ราคาเป็นตัวเลข");
 
       const payload = {
-        // IMPORTANT: รองรับทั้ง schema เก่า/ใหม่ใน Supabase ของมึง
-        // (จากรูป: menu_items มีทั้ง name / name_th / price / price_thb / img_url / image_uri / created_at_ms / updated_at)
         id: uid("menu"),
-        menu_id: uid("menu_id"),
         name,
-        name_th: name,
         desc,
         category: cat,
-
-        // ราคา
         price,
-        price_thb: price,
-
-        // สต็อก
         stock: Math.max(0, stock),
-        is_available: Math.max(0, stock) > 0,
-
-        // รูป
         image_url: image_url || null,
-        img_url: image_url || null,
-        image_uri: image_url || null,
-
-        // เวลา
         created_at_ms: nowMs(),
-        updated_at: new Date().toISOString(),
       };
 
       const { error } = await supabase.from("menu_items").insert(payload);
