@@ -734,7 +734,7 @@ function smartWarn(txt) {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          style={{ marginTop: 10 }}
+          style={{ marginTop: 10, maxHeight: 54 }}
           keyboardShouldPersistTaps="always"
          keyboardDismissMode="none">
           <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 14 }}>
@@ -1622,11 +1622,13 @@ const styles = StyleSheet.create({
   shopFloatingText: { fontWeight: "900", color: THEME.text },
 
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    height: 44,
+    paddingHorizontal: 14,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: THEME.line,
+    alignItems: "center",
+    justifyContent: "center",
   },
   chipIdle: { backgroundColor: THEME.soft },
   chipActive: { backgroundColor: THEME.primary2 },
