@@ -753,7 +753,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
           horizontal
           showsHorizontalScrollIndicator={false}
           style={{ marginTop: 10 }}
-          keyboardShouldPersistTaps="always"
+          keyboardShouldPersistTaps="handled"
         >
           <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 14 }}>
             {categories.map((c) => (
@@ -765,7 +765,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
         <FlatList
           data={filteredMenu}
           keyExtractor={(x) => String(x.id)}
-          keyboardShouldPersistTaps="always"
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
           renderItem={({ item }) => <MenuCard item={item} />}
           ListEmptyComponent={
@@ -790,7 +790,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
           }
         />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             {cart.length === 0 ? (
               <Text style={{ color: THEME.sub }}>ยังไม่มีรายการ</Text>
@@ -877,7 +877,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
           }
         />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             {customerOrders.length === 0 ? (
               <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
@@ -990,7 +990,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
 
         <ShopTabs />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>🧾 ออเดอร์ใหม่ ({shopNewOrders.length})</Text>
             {shopNewOrders.length === 0 ? (
@@ -1076,7 +1076,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
 
         <ShopTabs />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             {menu.length === 0 ? (
               <Text style={{ color: THEME.sub }}>ยังไม่มีเมนู</Text>
@@ -1150,7 +1150,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
 
         <ShopTabs />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             {servedHistory.length === 0 ? (
               <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
@@ -1192,7 +1192,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
 
         <ShopTabs />
 
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="always">
+        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             <Text style={styles.moneyBig}>฿{thb(revenueToday.sum)}</Text>
             <Text style={styles.menuSub}>จำนวนออเดอร์ที่เสิร์ฟวันนี้: {revenueToday.count}</Text>
@@ -1234,7 +1234,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
       <Modal visible={pickerOpen} transparent animationType="fade">
         <View style={styles.modalBack}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="always">
+            <ScrollView keyboardShouldPersistTaps="handled">
               <Text style={styles.modalTitle}>
                 {cat === "ก๋วยเตี๋ยว" ? "🍜 " : cat === "อาหาร" ? "🍛 " : "🥤 "}
                 {pickedMenu.name}
@@ -1577,7 +1577,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
 
             <View style={{ height: 10 }} />
 
-            <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="always">
+            <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="handled">
               {items.length === 0 ? (
                 <Text style={{ color: THEME.sub }}>ไม่มีรายการ</Text>
               ) : (
@@ -1621,7 +1621,7 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
       <Modal visible={addMenuOpen} transparent animationType="fade">
         <View style={styles.modalBack}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="always">
+            <ScrollView keyboardShouldPersistTaps="handled">
               <Text style={styles.modalTitle}>➕ เพิ่มเมนูใหม่</Text>
               <Text style={styles.modalSub}>ใส่ข้อมูลให้ครบ (เก็บใน Supabase)</Text>
 
@@ -1644,11 +1644,13 @@ toast("เข้าสู่ระบบร้านค้าแล้ว");
               />
 
               <Text style={[styles.modalSection, { marginTop: 10 }]}>หมวดหมู่</Text>
-              <View style={styles.optionRow}>
-                {["อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"].map((c) => (
-                  <Chip key={c} label={c} active={mCategory === c} onPress={() => setMCategory(c)} />
-                ))}
-              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <View style={styles.optionRow}>
+                  {["อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"].map((c) => (
+                    <Chip key={c} label={c} active={mCategory === c} onPress={() => setMCategory(c)} />
+                  ))}
+                </View>
+              </ScrollView>
 
               <TextInput
                 value={mPrice}
@@ -2012,7 +2014,7 @@ const styles = StyleSheet.create({
   modalSub: { marginTop: 6, color: THEME.sub, fontWeight: "700" },
   modalSection: { marginTop: 10, fontWeight: "900", color: THEME.text },
 
-  optionRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  optionRow: { flexDirection: "row", gap: 8, marginTop: 8, paddingHorizontal: 2 },
 
   shopTabs: {
     flexDirection: "row",
