@@ -1,15 +1,4 @@
-// App.js (FULL)
-// Expo Snack / Expo Web friendly (JS)
-// - Customer + Shop
-// - Supabase storage: menu_items / orders / served_history
-// - Shop login via Supabase Auth (email + password)
-// - Add menu button (name/desc/category/price/stock/image_url)
-// - Logo on every page (assets/logo.jpeg)
-// - Keyboard not auto hide (keyboardShouldPersistTaps + blurOnSubmit + KeyboardAvoidingView)
-// - NEW orders always on top
-// NOTE: Requires dependency: @supabase/supabase-js
-
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SafeAreaView,
   View,
@@ -17,31 +6,70 @@ import {
   Pressable,
   FlatList,
   TextInput,
-  Modal,
   Alert,
   StyleSheet,
   ScrollView,
-  Image,
   KeyboardAvoidingView,
   Platform,
-  ToastAndroid,
-  StatusBar,
+  ActivityIndicator,
 } from "react-native";
-import { createClient } from "@supabase/supabase-js";
+import { useLocalSearchParams } from "expo-router";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = "https://qiurgxsipiztibtinxrk.supabase.co";
+/**
+ * app/index.tsx (single-file)
+ * - Expo Router / React Native Web friendly
+ * - CUSTOMER / SHOP_LOGIN / SHOP_APP (hard-guard)
+ * - Typing Lock System: stops polling + heavy setState while typing
+ * - Shop polling with diff-check (no useless re-render)
+ * - Cancel Order + Return Stock (CANCELLED)
+ * - Realtime menu search + category filter
+ * - Merge duplicate cart lines (same item+options+note)
+ * - Minimal light-blue UI + horizontal category chips
+ *
+ * NOTE (Vercel/Expo Web): put keys in .env
+ *  EXPO_PUBLIC_SUPABASE_URL=
+ *  EXPO_PUBLIC_SUPABASE_ANON_KEY=
+ *
+ * Supabase SQL (run in SQL editor) for features used here:
+ *
+ * -- 1) Cancel Order fields + status
+ * alter table public.orders add column if not exists cancelled_at_ms bigint;
+ * alter table public.orders add column if not exists cancel_reason text;
+ * -- (If you use a Postgres enum for status, add CANCELLED there instead.)
+ *
+ * -- 2) Soft-delete menu items (optional)
+ * alter table public.menu_items add column if not exists is_active boolean default true;
+ */
+
+// -------------------- Supabase --------------------
+const SUPABASE_URL =
+  (process.env.EXPO_PUBLIC_SUPABASE_URL as string) ||
+  (process.env.NEXT_PUBLIC_SUPABASE_URL as string) ||
+  "";
 const SUPABASE_ANON =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpdXJneHNpcGl6dGlidGlueHJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg0NDQzNDUsImV4cCI6MjA4NDAyMDM0NX0.mPra9_UXUk0ntO3448uEnsK_sIOjemQEIBzvSTn9FBs";
+  (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ||
+  (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
+  "";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+function getSupabase(): SupabaseClient {
+  if (!SUPABASE_URL || !SUPABASE_ANON) {
+    // Fail fast in production. This is safer than silently using wrong keys.
+    throw new Error(
+      "Missing Supabase env. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env"
+    );
+  }
+  return createClient(SUPABASE_URL, SUPABASE_ANON);
+}
 
+// -------------------- Theme --------------------
 const THEME = {
   bg: "#F6FBFF",
   card: "#FFFFFF",
+  soft: "#EAF4FF",
   line: "rgba(15, 60, 110, 0.12)",
   text: "#0B2230",
   sub: "rgba(11,34,48,0.68)",
-  soft: "#EAF4FF",
   primary: "#5AA9FF",
   primary2: "#2E7DFF",
   ok: "#1FBF75",
@@ -49,22 +77,70 @@ const THEME = {
   danger: "#FF4D4D",
 };
 
-const CATEGORIES = ["ทั้งหมด", "อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"];
+// -------------------- Data helpers --------------------
+type Mode = "CUSTOMER" | "SHOP_LOGIN" | "SHOP_APP";
+
+type MenuItem = {
+  id: string;
+  name: string;
+  desc?: string;
+  category?: string;
+  price: number;
+  stock: number;
+  image_url?: string;
+  is_active?: boolean;
+  created_at_ms?: number;
+};
+
+type OrderStatus = "NEW" | "ACCEPTED" | "SERVED" | "CANCELLED";
+
+type OrderRow = {
+  order_id: string;
+  table_no: string;
+  session_id: string;
+  items_json: string;
+  note?: string;
+  status: OrderStatus;
+  created_at_ms: number;
+  accepted_at_ms?: number | null;
+  served_at_ms?: number | null;
+  cancelled_at_ms?: number | null;
+  cancel_reason?: string | null;
+  total_price?: number;
+};
+
+type CartLine = {
+  cart_key: string;
+  menu_id: string;
+  name: string;
+  category: string;
+  qty: number;
+  base_price: number;
+  final_price: number;
+  protein?: string;
+  protein_add?: number;
+  noodle?: string;
+  noodle_size?: string;
+  noodle_size_add?: number;
+  note?: string;
+};
+
+const CATEGORIES = ["ทั้งหมด", "อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"] as const;
 
 const FOOD_PROTEIN = [
   { label: "หมู", add: 0 },
   { label: "ไก่", add: 0 },
   { label: "เนื้อ", add: 10 },
   { label: "ทะเล", add: 20 },
-];
+] as const;
 
-const NOODLES = ["เส้นเล็ก", "เส้นใหญ่", "บะหมี่เหลือง", "มาม่า"];
+const NOODLES = ["เส้นเล็ก", "เส้นใหญ่", "บะหมี่เหลือง", "มาม่า"] as const;
 
 const NOODLE_SIZES = [
   { label: "เล็ก", add: -10 },
   { label: "ธรรมดา", add: 0 },
   { label: "ใหญ่", add: 10 },
-];
+] as const;
 
 function nowMs() {
   return Date.now();
@@ -72,186 +148,153 @@ function nowMs() {
 function uid(prefix = "id") {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
-function thb(n) {
+function thb(n: any) {
   const x = Number(n || 0);
   return x.toLocaleString("th-TH");
 }
-function fmtWait(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s} วิ`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m} นาที ${r} วิ`;
-}
-function toast(msg) {
-  if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
-  else Alert.alert("แจ้งเตือน", msg);
-}
-function normalizeCategory(m) {
+function normalizeCategory(m: Partial<MenuItem>) {
   const c = (m?.category || "").trim();
   if (c === "อาหาร" || c === "ก๋วยเตี๋ยว" || c === "เครื่องดื่ม") return c;
   return "อาหาร";
 }
-function parseItems(items_json) {
+function safeJsonParse<T>(raw: string, fallback: T): T {
   try {
-    const x = JSON.parse(items_json || "[]");
-    return Array.isArray(x) ? x : [];
+    const x = JSON.parse(raw);
+    return x ?? fallback;
   } catch {
-    return [];
+    return fallback;
   }
 }
 
-function Chip({ label, active, onPress }) {
+function makeCartKey(line: Omit<CartLine, "cart_key" | "qty"> & { qty?: number }) {
+  const note = (line.note || "").trim();
+  // normalize spacing/case for stable key
+  const keyObj = {
+    menu_id: line.menu_id,
+    protein: line.protein || "",
+    noodle: line.noodle || "",
+    noodle_size: line.noodle_size || "",
+    note: note,
+  };
+  return JSON.stringify(keyObj);
+}
+
+function orderListSignature(orders: OrderRow[]) {
+  // Diff-check: only important fields
+  const compact = orders.map((o) => ({
+    order_id: o.order_id,
+    status: o.status,
+    created_at_ms: o.created_at_ms,
+    accepted_at_ms: o.accepted_at_ms ?? null,
+    served_at_ms: o.served_at_ms ?? null,
+    cancelled_at_ms: o.cancelled_at_ms ?? null,
+    total_price: Number(o.total_price || 0),
+  }));
+  return JSON.stringify(compact);
+}
+
+// -------------------- UI atoms --------------------
+function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress?: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.chip, active ? styles.chipActive : styles.chipIdle]}>
-      <Text style={[styles.chipText, active ? styles.chipTextActive : styles.chipTextIdle]} numberOfLines={1}>
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.chip,
+        active ? { backgroundColor: THEME.primary, borderColor: "transparent" } : { backgroundColor: THEME.card },
+      ]}
+    >
+      <Text style={[styles.chipText, active ? { color: "#fff" } : { color: THEME.text }]} numberOfLines={1}>
         {label}
       </Text>
     </Pressable>
   );
 }
 
-function HeaderBar({ left, right }) {
+function PillButton({
+  label,
+  tone = "primary",
+  onPress,
+  disabled,
+}: {
+  label: string;
+  tone?: "primary" | "soft" | "danger" | "ok";
+  onPress?: () => void;
+  disabled?: boolean;
+}) {
+  const bg =
+    tone === "primary"
+      ? THEME.primary2
+      : tone === "danger"
+      ? THEME.danger
+      : tone === "ok"
+      ? THEME.ok
+      : THEME.soft;
+  const fg = tone === "soft" ? THEME.text : "#fff";
   return (
-    <View style={styles.headerBar}>
-      <View style={{ flex: 1 }}>{left}</View>
-      <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>{right}</View>
-    </View>
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.btn,
+        { backgroundColor: bg, opacity: disabled ? 0.55 : 1 },
+        tone === "soft" ? { borderWidth: 1, borderColor: THEME.line } : null,
+      ]}
+    >
+      <Text style={[styles.btnText, { color: fg }]}>{label}</Text>
+    </Pressable>
   );
 }
 
-function BrandLeft({ title, subtitle }) {
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-      <Image source={require("../assets/logo.jpeg")} style={styles.logo} />
-      <View>
-        <Text style={styles.headerTitle}>{title}</Text>
-        {!!subtitle && <Text style={styles.headerSub}>{subtitle}</Text>}
-      </View>
-    </View>
-  );
-}
-
+// -------------------- App --------------------
 export default function App() {
-  const [mode, setMode] = useState("CUSTOMER"); // CUSTOMER | SHOP
-  const [tab, setTab] = useState("MENU"); // MENU | CART | STATUS | SHOP_ORDERS | SHOP_STOCK | SHOP_HISTORY | SHOP_STATS
+  const supabaseRef = useRef<SupabaseClient | null>(null);
+  if (!supabaseRef.current) supabaseRef.current = getSupabase();
+  const supabase = supabaseRef.current;
 
-  const [tableNo, setTableNo] = useState("");
-  const [tableLocked, setTableLocked] = useState(false);
-  const [sessionId, setSessionId] = useState(uid("sess"));
-
-  const [menu, setMenu] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [servedHistory, setServedHistory] = useState([]);
-
-  const [loadingMenu, setLoadingMenu] = useState(false);
-  const [loadingOrders, setLoadingOrders] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(false);
-
-  const [category, setCategory] = useState("ทั้งหมด");
-  const [cart, setCart] = useState([]);
-
-  // Shop login via Supabase Auth
+  // --------- Mode + Typing Lock ---------
+  const [mode, setMode] = useState<Mode>("CUSTOMER");
   const [shopLoggedIn, setShopLoggedIn] = useState(false);
-  const [shopLoginIntent, setShopLoginIntent] = useState(false);
-  const [shopLoginScreen, setShopLoginScreen] = useState(false);
+  // Typing Lock System (NO state updates on focus/blur => avoids web/iOS focus drop)
+  const isTypingRef = useRef(false);
+  const shopPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const customerPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPass, setLoginPass] = useState("");
-
-  const loginEmailRef = useRef(null);
-  const loginPassRef = useRef(null);
-  const lastLoginFocusRef = useRef("email");
-
-
-
-  // Picker modal
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickedMenu, setPickedMenu] = useState(null);
-
-  const [pickProtein, setPickProtein] = useState(FOOD_PROTEIN[0]);
-  const [pickNoodle, setPickNoodle] = useState(NOODLES[0]);
-  const [pickNoodleSize, setPickNoodleSize] = useState(NOODLE_SIZES[1]);
-  const [pickNote, setPickNote] = useState("");
-  const [noteWarn, setNoteWarn] = useState(false);
-
-  // Shop preview modal (new order)
-  const [shopPreviewOpen, setShopPreviewOpen] = useState(false);
-  const [shopPreviewOrder, setShopPreviewOrder] = useState(null);
-
-  // Add menu modal
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [mName, setMName] = useState("");
-  const [mDesc, setMDesc] = useState("");
-  const [mCategory, setMCategory] = useState("อาหาร");
-  const [mPrice, setMPrice] = useState("");
-  const [mStock, setMStock] = useState("10");
-  const [mImageUrl, setMImageUrl] = useState("");
-
-  const lastSeenNewIdsRef = useRef(new Set());
-  const lastOrdersHashRef = useRef("");
-
-  function smartWarn(txt) {
-    const s = (txt || "").toLowerCase();
-    const bad = ["แพ้", "ห้าม", "ไม่เอา", "ถั่ว", "กุ้ง", "นม", "ไข่"];
-    setNoteWarn(bad.some((w) => s.includes(w)));
-  }
-
-  async function loadMenu() {
-    try {
-      setLoadingMenu(true);
-      const { data, error } = await supabase
-        .from("menu_items")
-        .select("*")
-        .order("created_at_ms", { ascending: false });
-      if (error) throw error;
-      setMenu(Array.isArray(data) ? data : []);
-    } catch (e) {
-      Alert.alert("โหลดเมนูไม่สำเร็จ", String(e.message || e));
-    } finally {
-      setLoadingMenu(false);
+  const stopPollingNow = useCallback(() => {
+    if (shopPollTimerRef.current) {
+      clearTimeout(shopPollTimerRef.current);
+      shopPollTimerRef.current = null;
     }
-  }
-
-  async function loadOrders() {
-    try {
-      setLoadingOrders(true);
-
-      let query = supabase.from("orders").select("*").order("created_at_ms", { ascending: false });
-      if (mode === "CUSTOMER") query = query.eq("session_id", sessionId);
-
-      const { data, error } = await query;
-      if (error) throw error;
-      setOrders(Array.isArray(data) ? data : []);
-    } catch (e) {
-      Alert.alert("โหลดออเดอร์ไม่สำเร็จ", String(e.message || e));
-    } finally {
-      setLoadingOrders(false);
+    if (customerPollTimerRef.current) {
+      clearTimeout(customerPollTimerRef.current);
+      customerPollTimerRef.current = null;
     }
-  }
+  }, []);
 
-  async function loadHistory() {
-    try {
-      setLoadingHistory(true);
-      const { data, error } = await supabase
-        .from("served_history")
-        .select("*")
-        .order("served_at_ms", { ascending: false });
-      if (error) throw error;
-      setServedHistory(Array.isArray(data) ? data : []);
-    } catch (e) {
-      Alert.alert("โหลดประวัติไม่สำเร็จ", String(e.message || e));
-    } finally {
-      setLoadingHistory(false);
-    }
-  }
+  const onFocusAny = useCallback(() => {
+    isTypingRef.current = true;
+    // Stop polling immediately to prevent setState during typing.
+    stopPollingNow();
+  }, [stopPollingNow]);
 
-  // Auth state
+  const onBlurAny = useCallback(() => {
+    isTypingRef.current = false;
+  }, []);
+
+  // HARD GUARD: never render shop app unless logged in
   useEffect(() => {
+    if (mode === "SHOP_APP" && !shopLoggedIn) setMode("SHOP_LOGIN");
+  }, [mode, shopLoggedIn]);
+
+  // Keep shopLoggedIn in sync with Supabase auth session
+  useEffect(() => {
+    let mounted = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      setShopLoggedIn(!!data?.session?.user);
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (mounted) setShopLoggedIn(!!data?.session?.user);
+      } catch {
+        // ignore
+      }
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -259,1825 +302,1374 @@ export default function App() {
     });
 
     return () => {
+      mounted = false;
       sub?.subscription?.unsubscribe?.();
     };
-  }, []);
+  }, [supabase]);
 
+  // --------- Customer session/table ---------
+  const [tableNo, setTableNo] = useState("");
+  const [tableLocked, setTableLocked] = useState(false);
+  const [sessionId, setSessionId] = useState(uid("sess"));
+
+  // --------- Data ---------
+  const [menu, setMenu] = useState<MenuItem[]>([]);
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [servedHistory, setServedHistory] = useState<any[]>([]);
+
+  const [loadingMenu, setLoadingMenu] = useState(false);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // --------- UI state ---------
+  const [customerTab, setCustomerTab] = useState<"MENU" | "CART" | "STATUS">("MENU");
+  const [shopTab, setShopTab] = useState<"ORDERS" | "STOCK" | "HISTORY" | "STATS">("ORDERS");
+
+  // QR table param support: /?table=5
+  const params = useLocalSearchParams();
   useEffect(() => {
-    loadMenu();
-    loadOrders();
-    loadHistory();
-  }, []);
+    const raw = (params as any)?.table;
+    const t = Array.isArray(raw) ? raw[0] : raw;
+    const next = String(t || "").trim();
+    if (!next) return;
 
-  useEffect(() => {
-    if (mode === "CUSTOMER") loadOrders();
-  }, [sessionId, mode]);
+    // Auto-lock table + start fresh session (only if not locked yet)
+    if (!tableLocked) {
+      setTableNo(next);
+      setTableLocked(true);
+      setSessionId(uid("sess"));
+      setCustomerTab("MENU");
+    }
+  }, [params, tableLocked]);
 
-  // Shop polling for NEW (no sound) - optimized to reduce re-render flicker + keyboard focus loss
-  useEffect(() => {
-    let timer = null;
-    let cancelled = false;
+  const [category, setCategory] = useState<(typeof CATEGORIES)[number]>("ทั้งหมด");
+  const [search, setSearch] = useState("");
 
-    async function tickShop() {
-      // Only poll when shop is active + logged in + currently on orders tab
-      if (mode !== "SHOP" || !shopLoggedIn || tab !== "SHOP_ORDERS") return;
+  const [cart, setCart] = useState<CartLine[]>([]);
 
-      // If any modal that uses TextInput is open, pause polling to prevent focus flicker on Web
-      if (shopLoginScreen || loginOpen || addMenuOpen || pickerOpen) return;
+  // Picker
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickedMenu, setPickedMenu] = useState<MenuItem | null>(null);
+  const [pickProtein, setPickProtein] = useState(FOOD_PROTEIN[0]);
+  const [pickNoodle, setPickNoodle] = useState(NOODLES[0]);
+  const [pickNoodleSize, setPickNoodleSize] = useState(NOODLE_SIZES[1]);
+  const [pickNote, setPickNote] = useState("");
 
+  // Add menu
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [mName, setMName] = useState("");
+  const [mDesc, setMDesc] = useState("");
+  const [mCategory, setMCategory] = useState<"อาหาร" | "ก๋วยเตี๋ยว" | "เครื่องดื่ม">("อาหาร");
+  const [mPrice, setMPrice] = useState("");
+  const [mStock, setMStock] = useState("10");
+  const [mImageUrl, setMImageUrl] = useState("");
+
+  // Shop login
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // Diff-check refs
+  const lastOrdersSigRef = useRef<string>("");
+  const lastMenuSigRef = useRef<string>("");
+
+  // -------------------- Loaders --------------------
+  const loadMenu = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setLoadingMenu(true);
       try {
         const { data, error } = await supabase
-          .from("orders")
+          .from("menu_items")
           .select("*")
           .order("created_at_ms", { ascending: false });
-
         if (error) throw error;
-        if (cancelled) return;
+        const list = (Array.isArray(data) ? data : []) as MenuItem[];
 
-        const list = Array.isArray(data) ? data : [];
+        // diff check to reduce re-render
+        const sig = JSON.stringify(
+          list.map((m) => ({ id: m.id, stock: m.stock, price: m.price, is_active: m.is_active ?? true }))
+        );
+        if (sig !== lastMenuSigRef.current) {
+          lastMenuSigRef.current = sig;
+          setMenu(list);
+        }
+      } catch (e: any) {
+        if (!opts?.silent) Alert.alert("โหลดเมนูไม่สำเร็จ", String(e?.message || e));
+      } finally {
+        if (!opts?.silent) setLoadingMenu(false);
+      }
+    },
+    [supabase]
+  );
 
-        // Lightweight hash: only compare first 80 rows (enough for UI)
-        const hash = list
-          .slice(0, 80)
-          .map((o) => `${o.order_id}:${o.status}:${o.total_price}:${o.created_at_ms}:${o.accepted_at_ms}:${o.served_at_ms}`)
-          .join("|");
+  const loadOrders = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setLoadingOrders(true);
+      try {
+        let query = supabase.from("orders").select("*").order("created_at_ms", { ascending: false });
+        if (mode === "CUSTOMER") query = query.eq("session_id", sessionId);
 
-        // Only update state when changed (prevents unnecessary re-renders)
-        if (hash !== lastOrdersHashRef.current) {
-          lastOrdersHashRef.current = hash;
+        const { data, error } = await query;
+        if (error) throw error;
+        const list = (Array.isArray(data) ? data : []) as OrderRow[];
+
+        const sig = orderListSignature(list);
+        if (sig !== lastOrdersSigRef.current) {
+          lastOrdersSigRef.current = sig;
           setOrders(list);
         }
-
-        // NEW order detection (no sound)
-        const newOrders = list.filter((o) => o.status === "NEW");
-        const seen = lastSeenNewIdsRef.current;
-        const newly = newOrders.filter((o) => !seen.has(o.order_id));
-
-        // Prevent modal/toast spam
-        if (newly.length > 0 && !shopPreviewOpen) {
-          newly.forEach((o) => seen.add(o.order_id));
-          setShopPreviewOrder(newly[0]);
-          setShopPreviewOpen(true);
-          toast("มีออเดอร์ใหม่!");
-        }
-      } catch {
-        // ignore polling errors
+      } catch (e: any) {
+        if (!opts?.silent) Alert.alert("โหลดออเดอร์ไม่สำเร็จ", String(e?.message || e));
+      } finally {
+        if (!opts?.silent) setLoadingOrders(false);
       }
+    },
+    [mode, sessionId, supabase]
+  );
+
+  const loadHistory = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setLoadingHistory(true);
+      try {
+        const { data, error } = await supabase
+          .from("served_history")
+          .select("*")
+          .order("served_at_ms", { ascending: false })
+          .limit(200);
+        if (error) throw error;
+        setServedHistory(Array.isArray(data) ? data : []);
+      } catch (e: any) {
+        if (!opts?.silent) Alert.alert("โหลดประวัติไม่สำเร็จ", String(e?.message || e));
+      } finally {
+        if (!opts?.silent) setLoadingHistory(false);
+      }
+    },
+    [supabase]
+  );
+
+  // Initial load
+  useEffect(() => {
+    loadMenu();
+  }, [loadMenu]);
+
+  useEffect(() => {
+    loadOrders({ silent: true });
+  }, [loadOrders]);
+
+  // -------------------- Polling (HARD-GUARDED + Typing Lock) --------------------
+  // No setInterval. We use a self-scheduling timeout and skip ALL loads while typing.
+  useEffect(() => {
+    const shouldPollShop = mode === "SHOP_APP" && shopLoggedIn;
+    if (!shouldPollShop) {
+      if (shopPollTimerRef.current) {
+        clearTimeout(shopPollTimerRef.current);
+        shopPollTimerRef.current = null;
+      }
+      return;
     }
 
-    tickShop();
-    timer = setInterval(tickShop, 2500);
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      // Guard every tick (mode/auth can change between timeouts)
+      if (!(mode === "SHOP_APP" && shopLoggedIn)) return;
+
+      if (!isTypingRef.current) {
+        // Silent refresh, diff-check prevents UI churn
+        await loadOrders({ silent: true });
+        await loadMenu({ silent: true });
+        if (shopTab === "HISTORY" || shopTab === "STATS") {
+          await loadHistory({ silent: true });
+        }
+      }
+
+      shopPollTimerRef.current = setTimeout(tick, 2500);
+    };
+
+    // Quick first tick after entering SHOP_APP
+    shopPollTimerRef.current = setTimeout(tick, 200);
 
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      if (shopPollTimerRef.current) {
+        clearTimeout(shopPollTimerRef.current);
+        shopPollTimerRef.current = null;
+      }
     };
-  }, [mode, shopLoggedIn, tab, shopPreviewOpen, shopLoginScreen, loginOpen, addMenuOpen, pickerOpen]);
+  }, [loadHistory, loadMenu, loadOrders, mode, shopLoggedIn, shopTab]);
 
-
-function calcFinalPrice({ base, cat, protein, noodleSize }) {
-    let price = Number(base || 0);
-    if (cat === "อาหาร") price += Number(protein?.add || 0);
-    if (cat === "ก๋วยเตี๋ยว") price += Number(noodleSize?.add || 0);
-    return price;
-  }
-
-  function openMenuPicker(item) {
-    if (!tableLocked) return;
-    const cat = normalizeCategory(item);
-    if (Number(item.stock || 0) <= 0) {
-      Alert.alert("ของหมด", "เมนูนี้หมดแล้ว");
+  // Customer status polling (only when viewing STATUS) with Typing Lock
+  useEffect(() => {
+    const shouldPollCustomer = mode === "CUSTOMER" && tableLocked && customerTab === "STATUS";
+    if (!shouldPollCustomer) {
+      if (customerPollTimerRef.current) {
+        clearTimeout(customerPollTimerRef.current);
+        customerPollTimerRef.current = null;
+      }
       return;
     }
-    setPickedMenu({ ...item, category: cat });
-    setPickNote("");
-    setNoteWarn(false);
+
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      if (!(mode === "CUSTOMER" && tableLocked && customerTab === "STATUS")) return;
+
+      if (!isTypingRef.current) {
+        await loadOrders({ silent: true });
+      }
+
+      customerPollTimerRef.current = setTimeout(tick, 3000);
+    };
+
+    customerPollTimerRef.current = setTimeout(tick, 250);
+
+    return () => {
+      cancelled = true;
+      if (customerPollTimerRef.current) {
+        clearTimeout(customerPollTimerRef.current);
+        customerPollTimerRef.current = null;
+      }
+    };
+  }, [customerTab, loadOrders, mode, tableLocked]);
+
+  // -------------------- Customer: menu filters --------------------
+  const filteredMenu = useMemo(() => {
+    const kw = (search || "").trim().toLowerCase();
+    return menu
+      .filter((m) => (m.is_active ?? true) !== false)
+      .filter((m) => (category === "ทั้งหมด" ? true : normalizeCategory(m) === category))
+      .filter((m) => {
+        if (!kw) return true;
+        const hay = `${m.name || ""} ${m.desc || ""}`.toLowerCase();
+        return hay.includes(kw);
+      });
+  }, [category, menu, search]);
+
+  // -------------------- Cart helpers --------------------
+  const cartTotal = useMemo(() => {
+    return cart.reduce((acc, it) => acc + Number(it.final_price || 0) * Number(it.qty || 1), 0);
+  }, [cart]);
+
+  const openPicker = useCallback((m: MenuItem) => {
+    setPickedMenu(m);
     setPickProtein(FOOD_PROTEIN[0]);
     setPickNoodle(NOODLES[0]);
     setPickNoodleSize(NOODLE_SIZES[1]);
+    setPickNote("");
     setPickerOpen(true);
-  }
+  }, []);
 
-  function addPickedToCart() {
+  const addToCart = useCallback(() => {
     if (!pickedMenu) return;
-    const cat = pickedMenu.category || "อาหาร";
+    if (Number(pickedMenu.stock || 0) <= 0) return Alert.alert("สินค้าหมด", "เมนูนี้หมดสต็อกแล้ว");
+
     const base = Number(pickedMenu.price || 0);
+    const add = Number(pickProtein.add || 0) + Number(pickNoodleSize.add || 0);
+    const final = base + add;
 
-    const finalPrice = calcFinalPrice({
-      base,
-      cat,
-      protein: pickProtein,
-      noodleSize: pickNoodleSize,
-    });
-
-    const row = {
-      cart_id: uid("cart"),
+    const lineNoKey: Omit<CartLine, "cart_key" | "qty"> = {
       menu_id: pickedMenu.id,
       name: pickedMenu.name,
-      category: cat,
+      category: normalizeCategory(pickedMenu),
       base_price: base,
-      final_price: finalPrice,
-      qty: 1,
-
-      protein: cat === "อาหาร" ? pickProtein?.label : null,
-      protein_add: cat === "อาหาร" ? pickProtein?.add : 0,
-
-      noodle: cat === "ก๋วยเตี๋ยว" ? pickNoodle : null,
-      noodle_size: cat === "ก๋วยเตี๋ยว" ? pickNoodleSize?.label : null,
-      noodle_size_add: cat === "ก๋วยเตี๋ยว" ? pickNoodleSize?.add : 0,
-
-      note: cat === "อาหาร" || cat === "ก๋วยเตี๋ยว" ? pickNote : "",
+      final_price: final,
+      protein: pickProtein.label,
+      protein_add: Number(pickProtein.add || 0),
+      noodle: pickNoodle,
+      noodle_size: pickNoodleSize.label,
+      noodle_size_add: Number(pickNoodleSize.add || 0),
+      note: (pickNote || "").trim(),
     };
 
-    setCart((p) => [...p, row]);
+    const key = makeCartKey(lineNoKey);
+
+    setCart((prev) => {
+      const idx = prev.findIndex((x) => x.cart_key === key);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], qty: copy[idx].qty + 1 };
+        return copy;
+      }
+      return [...prev, { ...lineNoKey, cart_key: key, qty: 1 }];
+    });
+
     setPickerOpen(false);
-    toast("เพิ่มลงตะกร้าแล้ว");
-  }
+    setPickedMenu(null);
+  }, [pickNoodle, pickNoodleSize, pickNote, pickProtein, pickedMenu]);
 
-  function cartTotal() {
-    return cart.reduce((acc, it) => acc + Number(it.final_price || 0) * Number(it.qty || 1), 0);
-  }
-
-  function updateQty(id, delta) {
+  const updateQty = useCallback((cart_key: string, delta: number) => {
     setCart((p) =>
-      p.map((x) => {
-        if (x.cart_id !== id) return x;
-        return { ...x, qty: Math.max(1, Number(x.qty || 1) + delta) };
-      })
+      p
+        .map((x) => (x.cart_key === cart_key ? { ...x, qty: Math.max(1, x.qty + delta) } : x))
+        .filter((x) => x.qty > 0)
     );
-  }
+  }, []);
 
-  function removeCart(id) {
-    setCart((p) => p.filter((x) => x.cart_id !== id));
-  }
+  const removeCart = useCallback((cart_key: string) => {
+    setCart((p) => p.filter((x) => x.cart_key !== cart_key));
+  }, []);
 
-  async function placeOrder() {
-    if (!tableLocked) return;
+  // -------------------- Customer: Table lock + reset --------------------
+  const lockTable = useCallback(() => {
+    const t = (tableNo || "").trim();
+    if (!t) return Alert.alert("เลือกโต๊ะ", "กรุณาใส่หมายเลขโต๊ะ");
+    setTableLocked(true);
+  }, [tableNo]);
+
+  const resetSession = useCallback(() => {
+    Alert.alert("เริ่มใหม่", "ล้างตะกร้าและสร้าง session ใหม่?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "เริ่มใหม่",
+        style: "destructive",
+        onPress: () => {
+          setCart([]);
+          setTableNo("");
+          setTableLocked(false);
+          setSessionId(uid("sess"));
+          setCustomerTab("MENU");
+          // refresh orders for new session
+          setOrders([]);
+          lastOrdersSigRef.current = "";
+        },
+      },
+    ]);
+  }, []);
+
+  // -------------------- Place order (atomic-ish with rollback) --------------------
+  const placeOrder = useCallback(async () => {
+    if (!tableLocked) return Alert.alert("ยังไม่ล็อกโต๊ะ", "กรุณาใส่หมายเลขโต๊ะและกดล็อกโต๊ะก่อน");
     if (cart.length === 0) return Alert.alert("ตะกร้าว่าง", "เลือกเมนูก่อน");
 
+    const orderId = uid("order");
+    const createdAt = nowMs();
+
+    // include menu_id in items_json for future cancel/return stock
+    const items = cart.map((x) => ({
+      menu_id: x.menu_id,
+      name: x.name,
+      category: x.category,
+      qty: x.qty,
+      base_price: x.base_price,
+      final_price: x.final_price,
+      protein: x.protein,
+      protein_add: x.protein_add,
+      noodle: x.noodle,
+      noodle_size: x.noodle_size,
+      noodle_size_add: x.noodle_size_add,
+      note: x.note,
+    }));
+
+    const payload: Partial<OrderRow> & { order_id: string } = {
+      order_id: orderId,
+      table_no: String(tableNo).trim(),
+      session_id: sessionId,
+      items_json: JSON.stringify(items),
+      note: items.some((x) => (x.note || "").trim()) ? "มีโน้ต" : "",
+      status: "NEW",
+      created_at_ms: createdAt,
+      accepted_at_ms: null,
+      served_at_ms: null,
+      cancelled_at_ms: null,
+      cancel_reason: null,
+      total_price: Number(cartTotal || 0),
+    };
+
     try {
-      const total = cartTotal();
+      // 1) insert order
+      const { error: e1 } = await supabase.from("orders").insert(payload);
+      if (e1) throw e1;
 
-      const payload = {
-        order_id: uid("order"),
-        table_no: String(tableNo),
-        session_id: sessionId,
-        items_json: JSON.stringify(
-          cart.map((x) => ({
-            name: x.name,
-            category: x.category,
-            qty: x.qty,
-            base_price: x.base_price,
-            final_price: x.final_price,
-            protein: x.protein,
-            protein_add: x.protein_add,
-            noodle: x.noodle,
-            noodle_size: x.noodle_size,
-            noodle_size_add: x.noodle_size_add,
-            note: x.note,
-          }))
-        ),
-        note: cart.some((x) => x.note) ? "มีโน้ต" : "",
-        status: "NEW",
-        created_at_ms: nowMs(),
-        accepted_at_ms: null,
-        served_at_ms: null,
-        total_price: total,
-      };
-
-      const { error } = await supabase.from("orders").insert(payload);
-      if (error) throw error;
-
-      // update stock
+      // 2) update stock per line (best-effort) + rollback on failure
       for (const it of cart) {
         const m = menu.find((x) => x.id === it.menu_id);
         if (!m) continue;
         const newStock = Math.max(0, Number(m.stock || 0) - Number(it.qty || 1));
-        await supabase.from("menu_items").update({ stock: newStock }).eq("id", it.menu_id);
+        const { error: e2 } = await supabase.from("menu_items").update({ stock: newStock }).eq("id", it.menu_id);
+        if (e2) {
+          // rollback: delete order record
+          await supabase.from("orders").delete().eq("order_id", orderId);
+          throw new Error("ตัดสต็อกไม่สำเร็จ (rollback ออเดอร์แล้ว)");
+        }
       }
 
       setCart([]);
-      toast("สั่งแล้ว ✅");
-      await loadMenu();
-      await loadOrders();
-      setTab("STATUS");
-    } catch (e) {
-      Alert.alert("สั่งไม่สำเร็จ", String(e.message || e));
+      setCustomerTab("STATUS");
+      await loadMenu({ silent: true });
+      await loadOrders({ silent: true });
+      Alert.alert("สำเร็จ", "สั่งอาหารแล้ว ✅");
+    } catch (e: any) {
+      Alert.alert("สั่งไม่สำเร็จ", String(e?.message || e));
     }
-  }
+  }, [cart, cartTotal, loadMenu, loadOrders, menu, sessionId, supabase, tableLocked, tableNo]);
 
-  async function acceptOrder(o) {
+  // -------------------- Shop auth --------------------
+  const shopLogin = useCallback(async () => {
+    const email = (loginEmail || "").trim();
+    const password = loginPass || "";
+    if (!email || !password) return Alert.alert("กรอกไม่ครบ", "ใส่อีเมลและรหัสผ่าน");
+
+    setLoginLoading(true);
     try {
-      const { error } = await supabase
-        .from("orders")
-        .update({ status: "ACCEPTED", accepted_at_ms: nowMs() })
-        .eq("order_id", o.order_id);
-      if (error) throw error;
-      toast("รับออเดอร์แล้ว");
-      await loadOrders();
-    } catch (e) {
-      Alert.alert("รับไม่สำเร็จ", String(e.message || e));
-    }
-  }
-
-  async function serveOrder(o) {
-    try {
-      const servedAt = nowMs();
-
-      const { error: e1 } = await supabase
-        .from("orders")
-        .update({ status: "SERVED", served_at_ms: servedAt })
-        .eq("order_id", o.order_id);
-      if (e1) throw e1;
-
-      const { error: e2 } = await supabase.from("served_history").insert({
-        id: uid("served"),
-        order_id: o.order_id,
-        table_no: o.table_no,
-        session_id: o.session_id,
-        items_json: o.items_json,
-        note: o.note || "",
-        served_at_ms: servedAt,
-        total_price: Number(o.total_price || 0),
-      });
-      if (e2) throw e2;
-
-      toast("เสิร์ฟแล้ว");
-      await loadOrders();
-      await loadHistory();
-    } catch (e) {
-      Alert.alert("เสิร์ฟไม่สำเร็จ", String(e.message || e));
-    }
-  }
-
-  async function shopLogin(emailOverride, passOverride) {
-    try {
-      const email = loginEmail.trim();
-      const password = loginPass;
-      if (!email || !password) return Alert.alert("กรอกไม่ครบ", "ใส่อีเมลและรหัสผ่าน");
-
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      setLoginOpen(false);
-      if (!shopLoggedIn) {
-                setShopLoginIntent(true);
-                setShopLoginScreen(true);
-                return;
-              }
-              setMode("SHOP");
-              setTab("SHOP_ORDERS");
-toast("เข้าสู่ระบบร้านค้าแล้ว");
-      lastSeenNewIdsRef.current = new Set();
-    } catch (e) {
-      Alert.alert("เข้าสู่ระบบไม่สำเร็จ", String(e.message || e));
+      setShopLoggedIn(true);
+      setMode("SHOP_APP");
+      setShopTab("ORDERS");
+      setLoginEmail("");
+      setLoginPass("");
+      await loadOrders({ silent: true });
+      await loadMenu({ silent: true });
+    } catch (e: any) {
+      Alert.alert("เข้าสู่ระบบไม่สำเร็จ", String(e?.message || e));
+    } finally {
+      setLoginLoading(false);
     }
-  }
+  }, [loadMenu, loadOrders, loginEmail, loginPass, supabase]);
 
-  async function shopLogout() {
-    await supabase.auth.signOut();
-    setMode("CUSTOMER");
-    setTab("MENU");
-    toast("ออกจากโหมดร้านค้าแล้ว");
-  }
-
-  async function addMenuToSupabase() {
+  const shopLogout = useCallback(async () => {
     try {
-      const name = mName.trim();
-      const desc = mDesc.trim();
-      const cat = mCategory;
-      const price = Number(mPrice || 0);
-      const stock = Number(mStock || 0);
-      const image_url = mImageUrl.trim();
+      await supabase.auth.signOut();
+    } catch {
+      // ignore
+    }
+    setShopLoggedIn(false);
+    setMode("CUSTOMER");
+    setShopTab("ORDERS");
+  }, [supabase]);
 
-      if (!name) return Alert.alert("ยังไม่ได้ใส่ชื่อเมนู", "ใส่ชื่อก่อน");
-      if (!price || price <= 0) return Alert.alert("ราคาไม่ถูก", "ใส่ราคาเป็นตัวเลข");
+  // -------------------- Shop actions --------------------
+  const acceptOrder = useCallback(
+    async (o: OrderRow) => {
+      try {
+        const { error } = await supabase
+          .from("orders")
+          .update({ status: "ACCEPTED", accepted_at_ms: nowMs() })
+          .eq("order_id", o.order_id);
+        if (error) throw error;
+        await loadOrders({ silent: true });
+      } catch (e: any) {
+        Alert.alert("รับไม่สำเร็จ", String(e?.message || e));
+      }
+    },
+    [loadOrders, supabase]
+  );
 
+  const serveOrder = useCallback(
+    async (o: OrderRow) => {
+      try {
+        const servedAt = nowMs();
+        const { error: e1 } = await supabase
+          .from("orders")
+          .update({ status: "SERVED", served_at_ms: servedAt })
+          .eq("order_id", o.order_id);
+        if (e1) throw e1;
+
+        const { error: e2 } = await supabase.from("served_history").insert({
+          id: uid("served"),
+          order_id: o.order_id,
+          table_no: o.table_no,
+          session_id: o.session_id,
+          items_json: o.items_json,
+          note: o.note || "",
+          served_at_ms: servedAt,
+          total_price: Number(o.total_price || 0),
+        });
+        if (e2) throw e2;
+
+        await loadOrders({ silent: true });
+        await loadHistory({ silent: true });
+      } catch (e: any) {
+        Alert.alert("เสิร์ฟไม่สำเร็จ", String(e?.message || e));
+      }
+    },
+    [loadHistory, loadOrders, supabase]
+  );
+
+  const cancelOrder = useCallback(
+    async (o: OrderRow) => {
+      if (!(o.status === "NEW" || o.status === "ACCEPTED")) return;
+
+      // Optional reason (simple prompt)
+      const doCancel = async (reason?: string) => {
+        try {
+          // 1) mark cancelled
+          const { error: e1 } = await supabase
+            .from("orders")
+            .update({ status: "CANCELLED", cancelled_at_ms: nowMs(), cancel_reason: reason || null })
+            .eq("order_id", o.order_id);
+          if (e1) throw e1;
+
+          // 2) return stock
+          const items = safeJsonParse<any[]>(o.items_json || "[]", []);
+          for (const it of items) {
+            const qty = Math.max(0, Number(it?.qty || 0));
+            if (qty <= 0) continue;
+
+            // prefer menu_id, fallback by name
+            const menuId: string | null = it?.menu_id || null;
+            let target = menuId ? menu.find((m) => m.id === menuId) : null;
+            if (!target && it?.name) {
+              const nm = String(it.name).trim();
+              target = menu.find((m) => (m.name || "").trim() === nm) || null;
+            }
+            if (!target) continue;
+
+            const newStock = Number(target.stock || 0) + qty;
+            await supabase.from("menu_items").update({ stock: newStock }).eq("id", target.id);
+          }
+
+          await loadMenu({ silent: true });
+          await loadOrders({ silent: true });
+        } catch (e: any) {
+          Alert.alert("ยกเลิกไม่สำเร็จ", String(e?.message || e));
+        }
+      };
+
+      Alert.alert("ยกเลิกออเดอร์", `ต้องการยกเลิกออเดอร์ ${o.order_id} ?`, [
+        { text: "ไม่ยกเลิก", style: "cancel" },
+        { text: "ยกเลิก", style: "destructive", onPress: () => void doCancel() },
+      ]);
+    },
+    [loadMenu, loadOrders, menu, supabase]
+  );
+
+  const stockDelta = useCallback(
+    async (m: MenuItem, delta: number) => {
+      try {
+        const next = Math.max(0, Number(m.stock || 0) + delta);
+        const { error } = await supabase.from("menu_items").update({ stock: next }).eq("id", m.id);
+        if (error) throw error;
+        await loadMenu({ silent: true });
+      } catch (e: any) {
+        Alert.alert("ปรับสต็อกไม่สำเร็จ", String(e?.message || e));
+      }
+    },
+    [loadMenu, supabase]
+  );
+
+  const addMenu = useCallback(async () => {
+    const name = (mName || "").trim();
+    const desc = (mDesc || "").trim();
+    const price = Number(mPrice || 0);
+    const stock = Number(mStock || 0);
+    const image_url = (mImageUrl || "").trim();
+
+    if (!name) return Alert.alert("กรอกไม่ครบ", "ใส่ชื่อเมนู");
+    if (!Number.isFinite(price) || price <= 0) return Alert.alert("ราคาไม่ถูกต้อง", "ใส่ราคามากกว่า 0");
+
+    try {
       const payload = {
         id: uid("menu"),
         name,
         desc,
-        category: cat,
+        category: mCategory,
         price,
-        stock: Math.max(0, stock),
-        image_url: image_url || null,
+        stock: Number.isFinite(stock) ? stock : 0,
+        image_url,
+        is_active: true,
         created_at_ms: nowMs(),
       };
-
       const { error } = await supabase.from("menu_items").insert(payload);
       if (error) throw error;
 
       setAddMenuOpen(false);
       setMName("");
       setMDesc("");
-      setMCategory("อาหาร");
       setMPrice("");
       setMStock("10");
       setMImageUrl("");
-
-      toast("เพิ่มเมนูแล้ว");
-      await loadMenu();
-    } catch (e) {
-      Alert.alert("เพิ่มเมนูไม่สำเร็จ", String(e.message || e));
+      await loadMenu({ silent: true });
+    } catch (e: any) {
+      Alert.alert("เพิ่มเมนูไม่สำเร็จ", String(e?.message || e));
     }
-  }
+  }, [loadMenu, mCategory, mDesc, mImageUrl, mName, mPrice, mStock, supabase]);
 
-  const categories = useMemo(() => CATEGORIES, []);
+  // -------------------- Shop stats --------------------
+  const todayStats = useMemo(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const startMs = start.getTime();
+    const list = servedHistory.filter((x) => Number(x?.served_at_ms || 0) >= startMs);
+    const total = list.reduce((acc, x) => acc + Number(x?.total_price || 0), 0);
 
-  const filteredMenu = useMemo(() => {
-    const normalized = menu.map((m) => ({ ...m, category: normalizeCategory(m) }));
-    if (category === "ทั้งหมด") return normalized;
-    return normalized.filter((x) => x.category === category);
-  }, [menu, category]);
-
-  const customerOrders = useMemo(() => {
-    return orders
-      .filter((o) => o.session_id === sessionId)
-      .sort((a, b) => Number(b.created_at_ms || 0) - Number(a.created_at_ms || 0));
-  }, [orders, sessionId]);
-
-  const shopNewOrders = useMemo(() => {
-    return orders
-      .filter((o) => o.status === "NEW")
-      .sort((a, b) => Number(b.created_at_ms || 0) - Number(a.created_at_ms || 0));
-  }, [orders]);
-
-  const shopCooking = useMemo(() => {
-    return orders
-      .filter((o) => o.status === "ACCEPTED")
-      .sort((a, b) => Number(b.accepted_at_ms || 0) - Number(a.accepted_at_ms || 0));
-  }, [orders]);
-
-  const revenueToday = useMemo(() => {
-    const d = new Date();
-    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    let sum = 0;
-    let count = 0;
-    servedHistory.forEach((h) => {
-      const t = new Date(Number(h.served_at_ms || 0));
-      const k = `${t.getFullYear()}-${t.getMonth()}-${t.getDate()}`;
-      if (k === key) {
-        sum += Number(h.total_price || 0);
-        count += 1;
+    const top: Record<string, number> = {};
+    for (const h of list) {
+      const items = safeJsonParse<any[]>(h?.items_json || "[]", []);
+      for (const it of items) {
+        const nm = String(it?.name || "").trim();
+        const qty = Number(it?.qty || 0);
+        if (!nm || qty <= 0) continue;
+        top[nm] = (top[nm] || 0) + qty;
       }
-    });
-    return { sum, count };
-  }, [servedHistory]);
-
-  const topMenusToday = useMemo(() => {
-    const d = new Date();
-    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    const map = new Map();
-    servedHistory.forEach((h) => {
-      const t = new Date(Number(h.served_at_ms || 0));
-      const k = `${t.getFullYear()}-${t.getMonth()}-${t.getDate()}`;
-      if (k !== key) return;
-      const items = parseItems(h.items_json);
-      items.forEach((it) => {
-        const name = it.name || "ไม่ทราบ";
-        map.set(name, (map.get(name) || 0) + Number(it.qty || 1));
-      });
-    });
-    return Array.from(map.entries())
-      .map(([name, qty]) => ({ name, qty }))
-      .sort((a, b) => b.qty - a.qty)
+    }
+    const topArr = Object.entries(top)
+      .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
+
+    return { total, count: list.length, topArr };
   }, [servedHistory]);
 
-  function CustomerTableGate() {
-    return (
-      <View style={styles.gateWrap}>
-        <View style={styles.gateCard}>
-          <Pressable
-            style={styles.shopFloatingBtn}
-            onPress={() => {
-              setMode("SHOP");
-              setShopLoginScreen(true);
-            }}
-          >
-            <Text style={styles.shopFloatingText}>🏪 ร้านค้า</Text>
-          </Pressable>
+  // -------------------- Render helpers --------------------
+  const goCustomer = useCallback(() => {
+    setMode("CUSTOMER");
+  }, []);
 
-          <View style={{ alignItems: "center" }}>
-            <Image source={require("../assets/logo.jpeg")} style={styles.logoBig} />
-            <Text style={styles.brandBig}>The Wood</Text>
-            <Text style={styles.brandSub}>เริ่มสั่งอาหาร</Text>
-          </View>
+  const goShop = useCallback(() => {
+    // ALWAYS go to login first
+    setMode("SHOP_LOGIN");
+  }, []);
 
-          <View style={{ height: 16 }} />
-
-          <Text style={styles.gateTitle}>🪑 เลือกโต๊ะก่อนใช้งาน</Text>
-          <Text style={styles.gateSub}>ใส่เลขโต๊ะ แล้วกด “เริ่มสั่งอาหาร”</Text>
-
-          <TextInput
-            value={tableNo}
-            onChangeText={(t) => setTableNo(t.replace(/[^0-9]/g, ""))}
-            placeholder="เช่น 1"
-            placeholderTextColor="rgba(11,34,48,0.35)"
-            style={styles.input}
-            keyboardType="number-pad"
-            blurOnSubmit={false}
-          />
-
-          <Pressable
-            style={styles.btnPrimary}
-            onPress={() => {
-              if (!tableNo.trim()) return Alert.alert("ยังไม่ได้ใส่โต๊ะ", "ใส่เลขโต๊ะก่อน");
-              setTableLocked(true);
-              setTab("MENU");
-              toast(`โต๊ะ ${tableNo} พร้อมสั่งแล้ว`);
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>เริ่มสั่งอาหาร</Text>
-          </Pressable>
-        </View>
+  // -------------------- Views --------------------
+  const Header = (
+    <View style={styles.header}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.hTitle}>TableWaiter</Text>
+        <Text style={styles.hSub}>สั่งอาหาร • ร้านค้า • สต็อก</Text>
       </View>
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <PillButton label="👤 CUSTOMER" tone={mode === "CUSTOMER" ? "primary" : "soft"} onPress={goCustomer} />
+        <PillButton label="🏪 SHOP" tone={mode !== "CUSTOMER" ? "primary" : "soft"} onPress={goShop} />
+      </View>
+    </View>
+  );
+
+  // -------------------- SHOP_LOGIN screen (no modal) --------------------
+  if (mode === "SHOP_LOGIN") {
+    return (
+      <SafeAreaView style={styles.root}>
+        {Header}
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+          <ScrollView contentContainerStyle={styles.centerScroll} keyboardShouldPersistTaps="handled">
+            <View style={styles.card}>
+              <Text style={styles.title}>เข้าสู่ระบบร้านค้า</Text>
+              <Text style={styles.sub}>ต้องล็อกอินก่อนถึงจะเข้าระบบร้านได้</Text>
+
+              <Text style={styles.label}>อีเมล</Text>
+              <TextInput
+                value={loginEmail}
+                onChangeText={setLoginEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                placeholder="example@email.com"
+                style={styles.input}
+                onFocus={onFocusAny}
+                onBlur={onBlurAny}
+                autoCorrect={false}
+              />
+
+              <Text style={styles.label}>รหัสผ่าน</Text>
+              <TextInput
+                value={loginPass}
+                onChangeText={setLoginPass}
+                autoCapitalize="none"
+                secureTextEntry
+                placeholder="••••••••"
+                style={styles.input}
+                onFocus={onFocusAny}
+                onBlur={onBlurAny}
+                autoCorrect={false}
+              />
+
+              <Pressable
+                style={[styles.bigBtn, loginLoading ? { opacity: 0.7 } : null]}
+                onPress={shopLogin}
+                disabled={loginLoading}
+              >
+                {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.bigBtnText}>ล็อกอิน</Text>}
+              </Pressable>
+
+              <Pressable onPress={() => setMode("CUSTOMER")} style={{ marginTop: 12, alignItems: "center" }}>
+                <Text style={{ color: THEME.sub, fontWeight: "800" }}>← กลับไปโหมดลูกค้า</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
     );
   }
 
-  function MenuCard({ item }) {
-    const out = Number(item.stock || 0) <= 0;
-    const cat = item.category || normalizeCategory(item);
+  // -------------------- SHOP_APP (hard guard) --------------------
+  if (mode === "SHOP_APP") {
+    if (!shopLoggedIn) {
+      // extra safety
+      return null;
+    }
+
     return (
-      <Pressable
-        onPress={() => openMenuPicker(item)}
-        style={[styles.menuCard, out && { opacity: 0.45 }]}
-        disabled={!tableLocked}
-      >
-        {item.image_url ? (
-          <Image source={{ uri: item.image_url }} style={styles.menuImg} />
-        ) : (
-          <View style={styles.menuImgEmpty}>
-            <Text style={{ color: THEME.sub, fontWeight: "900" }}>No Image</Text>
+      <SafeAreaView style={styles.root}>
+        {Header}
+
+        <View style={styles.tabRow}>
+          <Chip label="ออเดอร์" active={shopTab === "ORDERS"} onPress={() => setShopTab("ORDERS")} />
+          <Chip label="สต็อก" active={shopTab === "STOCK"} onPress={() => setShopTab("STOCK")} />
+          <Chip label="ประวัติ" active={shopTab === "HISTORY"} onPress={() => setShopTab("HISTORY")} />
+          <Chip label="สถิติ" active={shopTab === "STATS"} onPress={() => setShopTab("STATS")} />
+          <View style={{ flex: 1 }} />
+          <PillButton label="ออกจากระบบ" tone="soft" onPress={shopLogout} />
+        </View>
+
+        {shopTab === "ORDERS" && (
+          <View style={{ flex: 1 }}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>ออเดอร์ล่าสุด</Text>
+              <PillButton label="รีเฟรช" tone="soft" onPress={() => loadOrders()} disabled={loadingOrders} />
+            </View>
+
+            {loadingOrders ? (
+              <View style={styles.center}>
+                <ActivityIndicator />
+              </View>
+            ) : (
+              <FlatList
+                data={orders}
+                keyExtractor={(it) => it.order_id}
+                contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+                renderItem={({ item }) => {
+                  const items = safeJsonParse<any[]>(item.items_json || "[]", []);
+                  const canCancel = item.status === "NEW" || item.status === "ACCEPTED";
+                  return (
+                    <View style={styles.orderCard}>
+                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                        <Text style={styles.orderTitle}>โต๊ะ {item.table_no}</Text>
+                        <View style={{ flex: 1 }} />
+                        <Text
+                          style={[
+                            styles.badge,
+                            item.status === "NEW"
+                              ? { backgroundColor: THEME.warn }
+                              : item.status === "ACCEPTED"
+                              ? { backgroundColor: THEME.primary }
+                              : item.status === "SERVED"
+                              ? { backgroundColor: THEME.ok }
+                              : { backgroundColor: THEME.danger },
+                          ]}
+                        >
+                          {item.status}
+                        </Text>
+                      </View>
+
+                      <Text style={styles.orderSub}>#{item.order_id}</Text>
+
+                      <View style={{ marginTop: 8, gap: 4 }}>
+                        {items.map((x, idx) => (
+                          <Text key={idx} style={styles.orderLine}>
+                            • {x?.name} x{Number(x?.qty || 0)}
+                            {x?.protein ? ` (${x.protein}` : ""}
+                            {x?.noodle ? `, ${x.noodle}` : ""}
+                            {x?.noodle_size ? `, ${x.noodle_size}` : ""}
+                            {(x?.protein || x?.noodle || x?.noodle_size) ? ")" : ""}
+                            {x?.note ? ` — ${String(x.note).trim()}` : ""}
+                          </Text>
+                        ))}
+                      </View>
+
+                      <View style={{ flexDirection: "row", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                        {item.status === "NEW" && (
+                          <PillButton label="รับออเดอร์" tone="primary" onPress={() => acceptOrder(item)} />
+                        )}
+                        {item.status === "ACCEPTED" && (
+                          <PillButton label="เสิร์ฟแล้ว" tone="ok" onPress={() => serveOrder(item)} />
+                        )}
+                        {canCancel && <PillButton label="ยกเลิก" tone="danger" onPress={() => cancelOrder(item)} />}
+                      </View>
+
+                      <Text style={[styles.orderSub, { marginTop: 10 }]}>รวม ฿{thb(item.total_price || 0)}</Text>
+                      {item.status === "CANCELLED" && item.cancelled_at_ms ? (
+                        <Text style={[styles.orderSub, { marginTop: 2 }]}>ยกเลิกแล้ว</Text>
+                      ) : null}
+                    </View>
+                  );
+                }}
+              />
+            )}
           </View>
         )}
 
-        <View style={{ flex: 1 }}>
-          <Text style={styles.menuName}>
-            {cat === "ก๋วยเตี๋ยว" ? "🍜 " : cat === "อาหาร" ? "🍛 " : "🥤 "}
-            {item.name}
-          </Text>
-          <Text style={styles.menuSub} numberOfLines={2}>
-            {item.desc || " "}
-          </Text>
-
-          <View style={styles.menuMetaRow}>
-            <Text style={styles.menuPrice}>฿{thb(item.price)}</Text>
-            <Text style={styles.menuStock}>สต็อก {Number(item.stock || 0)}</Text>
-          </View>
-
-          {out && <Text style={styles.outText}>❌ ของหมด</Text>}
-        </View>
-      </Pressable>
-    );
-  }
-
-  function CustomerMenu() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="The Wood" subtitle={`โต๊ะ ${tableNo}`} />}
-          right={
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable style={styles.iconBtn} onPress={() => setTab("CART")}>
-                <Text style={styles.iconBtnText}>🛒 {cart.length}</Text>
-              </Pressable>
-              <Pressable style={styles.iconBtn} onPress={loadMenu}>
-                <Text style={styles.iconBtnText}>{loadingMenu ? "⏳" : "🔄"}</Text>
-              </Pressable>
+        {shopTab === "STOCK" && (
+          <View style={{ flex: 1 }}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>สต็อกเมนู</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <PillButton label="เพิ่มเมนู" tone="primary" onPress={() => setAddMenuOpen(true)} />
+                <PillButton label="รีเฟรช" tone="soft" onPress={() => loadMenu()} disabled={loadingMenu} />
+              </View>
             </View>
-          }
-        />
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={{ marginTop: 10 }}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 14 }}>
-            {categories.map((c) => (
-              <Chip key={c} label={c} active={category === c} onPress={() => setCategory(c)} />
-            ))}
-          </View>
-        </ScrollView>
-
-        <FlatList
-          data={filteredMenu}
-          keyExtractor={(x) => String(x.id)}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
-          renderItem={({ item }) => <MenuCard item={item} />}
-          ListEmptyComponent={
-            <View style={{ padding: 14 }}>
-              <Text style={{ color: THEME.sub }}>ยังไม่มีเมนู</Text>
-            </View>
-          }
-        />
-      </View>
-    );
-  }
-
-  function CustomerCart() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="ตะกร้า" subtitle={`โต๊ะ ${tableNo}`} />}
-          right={
-            <Pressable style={styles.iconBtn} onPress={() => setTab("MENU")}>
-              <Text style={styles.iconBtnText}>🍽️</Text>
-            </Pressable>
-          }
-        />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            {cart.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ยังไม่มีรายการ</Text>
-            ) : (
-              <View style={{ gap: 10 }}>
-                {cart.map((it) => (
-                  <View key={it.cart_id} style={styles.cartRow}>
+            <FlatList
+              data={menu.filter((m) => (m.is_active ?? true) !== false)}
+              keyExtractor={(it) => it.id}
+              contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+              renderItem={({ item }) => (
+                <View style={styles.stockCard}>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.cartName}>
-                        {it.category === "ก๋วยเตี๋ยว" ? "🍜 " : it.category === "อาหาร" ? "🍛 " : "🥤 "}
-                        {it.name}
-                      </Text>
-
-                      {it.category === "อาหาร" && (
-                        <Text style={styles.cartSub}>
-                          โปรตีน: {it.protein}{" "}
-                          {it.protein_add === 10 ? "(+10)" : it.protein_add === 20 ? "(+20)" : ""}
-                        </Text>
-                      )}
-
-                      {it.category === "ก๋วยเตี๋ยว" && (
-                        <Text style={styles.cartSub}>
-                          {it.noodle} • ขนาด {it.noodle_size}{" "}
-                          {it.noodle_size_add === -10 ? "(-10)" : it.noodle_size_add === 10 ? "(+10)" : ""}
-                        </Text>
-                      )}
-
-                      {it.note ? <Text style={[styles.cartSub, { color: THEME.danger }]}>📝 {it.note}</Text> : null}
-
-                      <Text style={styles.cartSub}>
-                        ฿{thb(it.final_price)} x {it.qty}
+                      <Text style={styles.stockName}>{item.name}</Text>
+                      <Text style={styles.stockSub}>
+                        {normalizeCategory(item)} • ฿{thb(item.price)}
                       </Text>
                     </View>
-
-                    <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-                      <Pressable style={styles.qtyBtn} onPress={() => updateQty(it.cart_id, -1)}>
-                        <Text style={styles.qtyBtnText}>-</Text>
-                      </Pressable>
-                      <Text style={{ fontWeight: "900", color: THEME.text }}>{it.qty}</Text>
-                      <Pressable style={styles.qtyBtn} onPress={() => updateQty(it.cart_id, 1)}>
-                        <Text style={styles.qtyBtnText}>+</Text>
-                      </Pressable>
-                      <Pressable style={styles.delBtn} onPress={() => removeCart(it.cart_id)}>
-                        <Text style={styles.delBtnText}>ลบ</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>รวม</Text>
-              <Text style={styles.totalValue}>฿{thb(cartTotal())}</Text>
-            </View>
-
-            <Pressable style={styles.btnPrimary} onPress={placeOrder}>
-              <Text style={styles.btnPrimaryText}>สั่งอาหาร</Text>
-            </Pressable>
-
-            <Pressable style={styles.btnSoft} onPress={() => setTab("STATUS")}>
-              <Text style={styles.btnSoftText}>📦 ดูสถานะออเดอร์</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function CustomerStatus() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="สถานะออเดอร์" subtitle={`โต๊ะ ${tableNo}`} />}
-          right={
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable style={styles.iconBtn} onPress={loadOrders}>
-                <Text style={styles.iconBtnText}>{loadingOrders ? "⏳" : "🔄"}</Text>
-              </Pressable>
-              <Pressable style={styles.iconBtn} onPress={() => setTab("MENU")}>
-                <Text style={styles.iconBtnText}>🍽️</Text>
-              </Pressable>
-            </View>
-          }
-        />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            {customerOrders.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
-            ) : (
-              <View style={{ gap: 10 }}>
-                {customerOrders.slice(0, 20).map((o) => {
-                  const wait = nowMs() - Number(o.created_at_ms || 0);
-                  const served = o.status === "SERVED";
-                  const accepted = o.status === "ACCEPTED";
-                  return (
-                    <View key={o.order_id} style={styles.orderRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.orderTitle}>
-                          ฿{thb(o.total_price)} • โต๊ะ {o.table_no}
-                        </Text>
-                        <Text style={styles.orderSub}>
-                          สถานะ:{" "}
-                          <Text style={{ fontWeight: "900", color: served ? THEME.ok : accepted ? THEME.warn : THEME.sub }}>
-                            {served ? "เสิร์ฟแล้ว" : accepted ? "กำลังทำ" : "รอรับ"}
-                          </Text>
-                        </Text>
-                        {!served && <Text style={styles.orderSub}>รอมาแล้ว: {fmtWait(wait)}</Text>}
-                      </View>
-                      <Text style={styles.orderBadge}>{served ? "✅" : accepted ? "🍳" : "🕒"}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            <Pressable
-              style={styles.btnSoft}
-              onPress={() => {
-                setSessionId(uid("sess"));
-                setCart([]);
-                setTab("MENU");
-              }}
-            >
-              <Text style={styles.btnSoftText}>🧼 เริ่มรอบใหม่ (ล้างหน้าจอคนนี้)</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function BottomNavCustomer() {
-    return (
-      <View style={styles.bottomNav}>
-        <Pressable style={styles.navBtn} onPress={() => setTab("MENU")}>
-          <Text style={styles.navText}>🍽️ เมนู</Text>
-        </Pressable>
-        <Pressable style={styles.navBtn} onPress={() => setTab("CART")}>
-          <Text style={styles.navText}>🛒 ตะกร้า</Text>
-        </Pressable>
-        <Pressable style={styles.navBtn} onPress={() => setTab("STATUS")}>
-          <Text style={styles.navText}>📦 สถานะ</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  function ShopTabs() {
-    return (
-      <View style={styles.shopTabs}>
-        <Pressable
-          style={[styles.shopTabBtn, tab === "SHOP_ORDERS" && styles.shopTabBtnActive]}
-          onPress={() => setTab("SHOP_ORDERS")}
-        >
-          <Text style={[styles.shopTabText, tab === "SHOP_ORDERS" && styles.shopTabTextActive]}>🧾 ออเดอร์</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.shopTabBtn, tab === "SHOP_STOCK" && styles.shopTabBtnActive]}
-          onPress={() => setTab("SHOP_STOCK")}
-        >
-          <Text style={[styles.shopTabText, tab === "SHOP_STOCK" && styles.shopTabTextActive]}>📦 สต็อก</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.shopTabBtn, tab === "SHOP_HISTORY" && styles.shopTabBtnActive]}
-          onPress={() => setTab("SHOP_HISTORY")}
-        >
-          <Text style={[styles.shopTabText, tab === "SHOP_HISTORY" && styles.shopTabTextActive]}>📚 เสิร์ฟ</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.shopTabBtn, tab === "SHOP_STATS" && styles.shopTabBtnActive]}
-          onPress={() => setTab("SHOP_STATS")}
-        >
-          <Text style={[styles.shopTabText, tab === "SHOP_STATS" && styles.shopTabTextActive]}>📊 รายรับ</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  function ShopOrders() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="หลังร้าน" subtitle="The Wood" />}
-          right={
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable style={styles.iconBtn} onPress={loadOrders}>
-                <Text style={styles.iconBtnText}>{loadingOrders ? "⏳" : "🔄"}</Text>
-              </Pressable>
-              <Pressable style={styles.iconBtn} onPress={shopLogout}>
-                <Text style={styles.iconBtnText}>🚪</Text>
-              </Pressable>
-            </View>
-          }
-        />
-
-        <ShopTabs />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>🧾 ออเดอร์ใหม่ ({shopNewOrders.length})</Text>
-            {shopNewOrders.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
-            ) : (
-              <View style={{ gap: 10, marginTop: 10 }}>
-                {shopNewOrders.map((o) => (
-                  <Pressable
-                    key={o.order_id}
-                    style={styles.shopOrderCard}
-                    onPress={() => {
-                      setShopPreviewOrder(o);
-                      setShopPreviewOpen(true);
-                    }}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.orderTitle}>
-                        โต๊ะ {o.table_no} • ฿{thb(o.total_price)}
-                      </Text>
-                      <Text style={styles.orderSub}>รอมาแล้ว: {fmtWait(nowMs() - Number(o.created_at_ms || 0))}</Text>
-                    </View>
-                    <Pressable style={styles.btnOk} onPress={() => acceptOrder(o)}>
-                      <Text style={styles.btnOkText}>รับ</Text>
-                    </Pressable>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-
-          <View style={{ height: 12 }} />
-
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>🍳 กำลังทำ ({shopCooking.length})</Text>
-            {shopCooking.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
-            ) : (
-              <View style={{ gap: 10, marginTop: 10 }}>
-                {shopCooking.map((o) => (
-                  <Pressable
-                    key={o.order_id}
-                    style={styles.shopOrderCard}
-                    onPress={() => {
-                      setShopPreviewOrder(o);
-                      setShopPreviewOpen(true);
-                    }}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.orderTitle}>
-                        โต๊ะ {o.table_no} • ฿{thb(o.total_price)}
-                      </Text>
-                      <Text style={styles.orderSub}>เวลารวม: {fmtWait(nowMs() - Number(o.created_at_ms || 0))}</Text>
-                    </View>
-                    <Pressable style={styles.btnPrimary} onPress={() => serveOrder(o)}>
-                      <Text style={styles.btnPrimaryText}>เสิร์ฟแล้ว</Text>
-                    </Pressable>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function ShopStock() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="สต็อก" subtitle="จัดการเมนูวันนี้" />}
-          right={
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable style={styles.iconBtn} onPress={loadMenu}>
-                <Text style={styles.iconBtnText}>{loadingMenu ? "⏳" : "🔄"}</Text>
-              </Pressable>
-              <Pressable style={styles.iconBtn} onPress={() => setAddMenuOpen(true)}>
-                <Text style={styles.iconBtnText}>➕ เมนู</Text>
-              </Pressable>
-            </View>
-          }
-        />
-
-        <ShopTabs />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            {menu.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ยังไม่มีเมนู</Text>
-            ) : (
-              <View style={{ gap: 10 }}>
-                {menu.map((m) => (
-                  <View key={m.id} style={styles.stockRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.menuName}>
-                        {(normalizeCategory(m) === "ก๋วยเตี๋ยว"
-                          ? "🍜 "
-                          : normalizeCategory(m) === "อาหาร"
-                          ? "🍛 "
-                          : "🥤 ") + m.name}
-                      </Text>
-                      <Text style={styles.menuSub}>สต็อก: {Number(m.stock || 0)}</Text>
-                    </View>
-
-                    <Pressable
-                      style={styles.qtyBtn}
-                      onPress={async () => {
-                        const next = Math.max(0, Number(m.stock || 0) - 1);
-                        await supabase.from("menu_items").update({ stock: next }).eq("id", m.id);
-                        await loadMenu();
-                      }}
-                    >
-                      <Text style={styles.qtyBtnText}>-</Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={styles.qtyBtn}
-                      onPress={async () => {
-                        const next = Math.max(0, Number(m.stock || 0) + 1);
-                        await supabase.from("menu_items").update({ stock: next }).eq("id", m.id);
-                        await loadMenu();
-                      }}
-                    >
-                      <Text style={styles.qtyBtnText}>+</Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={styles.btnDanger}
-                      onPress={async () => {
-                        await supabase.from("menu_items").update({ stock: 0 }).eq("id", m.id);
-                        await loadMenu();
-                      }}
-                    >
-                      <Text style={styles.btnDangerText}>หมด</Text>
-                    </Pressable>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function ShopHistory() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="ประวัติการเสิร์ฟ" subtitle="ถาวร (ไม่รีเซ็ต)" />}
-          right={
-            <Pressable style={styles.iconBtn} onPress={loadHistory}>
-              <Text style={styles.iconBtnText}>{loadingHistory ? "⏳" : "🔄"}</Text>
-            </Pressable>
-          }
-        />
-
-        <ShopTabs />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            {servedHistory.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ไม่มีออเดอร์</Text>
-            ) : (
-              <View style={{ gap: 10 }}>
-                {servedHistory.slice(0, 40).map((h) => {
-                  const t = new Date(Number(h.served_at_ms || 0));
-                  return (
-                    <View key={h.id} style={styles.orderRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.orderTitle}>
-                          โต๊ะ {h.table_no} • ฿{thb(h.total_price)}
-                        </Text>
-                        <Text style={styles.orderSub}>{t.toLocaleString("th-TH")}</Text>
-                      </View>
-                      <Text style={styles.orderBadge}>✅</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function ShopStats() {
-    return (
-      <View style={{ flex: 1 }}>
-        <HeaderBar
-          left={<BrandLeft title="รายรับวันนี้" subtitle="The Wood" />}
-          right={
-            <Pressable style={styles.iconBtn} onPress={loadHistory}>
-              <Text style={styles.iconBtnText}>{loadingHistory ? "⏳" : "🔄"}</Text>
-            </Pressable>
-          }
-        />
-
-        <ShopTabs />
-
-        <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.card}>
-            <Text style={styles.moneyBig}>฿{thb(revenueToday.sum)}</Text>
-            <Text style={styles.menuSub}>จำนวนออเดอร์ที่เสิร์ฟวันนี้: {revenueToday.count}</Text>
-
-            <View style={{ height: 14 }} />
-
-            <Text style={styles.sectionTitle}>🏆 Top เมนูวันนี้</Text>
-            {topMenusToday.length === 0 ? (
-              <Text style={{ color: THEME.sub }}>ยังไม่มีข้อมูล</Text>
-            ) : (
-              <View style={{ gap: 8, marginTop: 10 }}>
-                {topMenusToday.map((x) => (
-                  <View key={x.name} style={styles.topRow}>
-                    <Text style={{ flex: 1, fontWeight: "900", color: THEME.text }}>{x.name}</Text>
-                    <Text style={{ color: THEME.sub, fontWeight: "900" }}>x{x.qty}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  function MenuPickerModal() {
-    if (!pickedMenu) return null;
-    const cat = pickedMenu.category || "อาหาร";
-    const base = Number(pickedMenu.price || 0);
-
-    const finalPrice = calcFinalPrice({
-      base,
-      cat,
-      protein: pickProtein,
-      noodleSize: pickNoodleSize,
-    });
-
-    return (
-      <Modal visible={pickerOpen} transparent animationType="fade">
-        <View style={styles.modalBack}>
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.modalTitle}>
-                {cat === "ก๋วยเตี๋ยว" ? "🍜 " : cat === "อาหาร" ? "🍛 " : "🥤 "}
-                {pickedMenu.name}
-              </Text>
-
-              <Text style={styles.modalSub}>ราคา: ฿{thb(base)}</Text>
-
-              {cat === "อาหาร" && (
-                <>
-                  <Text style={styles.modalSection}>เลือกโปรตีน</Text>
-                  <View style={styles.optionRow}>
-                    {FOOD_PROTEIN.map((x) => (
-                      <Chip
-                        key={x.label}
-                        label={`${x.label}${x.add === 10 ? " (+10)" : x.add === 20 ? " (+20)" : ""}`}
-                        active={pickProtein.label === x.label}
-                        onPress={() => setPickProtein(x)}
-                      />
-                    ))}
+                    <Text style={styles.stockQty}>{Number(item.stock || 0)}</Text>
                   </View>
 
-                  <Text style={[styles.modalSub, { marginTop: 8, fontWeight: "900" }]}>
-                    รวมราคา: ฿{thb(finalPrice)}
-                  </Text>
-                </>
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                    <PillButton label="-1" tone="soft" onPress={() => stockDelta(item, -1)} />
+                    <PillButton label="+1" tone="soft" onPress={() => stockDelta(item, +1)} />
+                    <PillButton label="หมด" tone="danger" onPress={() => stockDelta(item, -999999)} />
+                  </View>
+                </View>
               )}
+            />
+          </View>
+        )}
 
-              {cat === "ก๋วยเตี๋ยว" && (
-                <>
-                  <Text style={styles.modalSection}>เลือกเส้น</Text>
-                  <View style={styles.optionRow}>
-                    {NOODLES.map((x) => (
-                      <Chip key={x} label={x} active={pickNoodle === x} onPress={() => setPickNoodle(x)} />
-                    ))}
+        {shopTab === "HISTORY" && (
+          <View style={{ flex: 1 }}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>ประวัติที่เสิร์ฟแล้ว</Text>
+              <PillButton label="รีเฟรช" tone="soft" onPress={() => loadHistory()} disabled={loadingHistory} />
+            </View>
+
+            {loadingHistory ? (
+              <View style={styles.center}>
+                <ActivityIndicator />
+              </View>
+            ) : (
+              <FlatList
+                data={servedHistory}
+                keyExtractor={(it) => String(it.id || it.order_id || Math.random())}
+                contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+                renderItem={({ item }) => (
+                  <View style={styles.orderCard}>
+                    <Text style={styles.orderTitle}>โต๊ะ {item.table_no}</Text>
+                    <Text style={styles.orderSub}>รวม ฿{thb(item.total_price || 0)}</Text>
                   </View>
+                )}
+              />
+            )}
+          </View>
+        )}
 
-                  <Text style={[styles.modalSection, { marginTop: 10 }]}>เลือกขนาด</Text>
-                  <View style={styles.optionRow}>
-                    {NOODLE_SIZES.map((x) => (
-                      <Chip
-                        key={x.label}
-                        label={`${x.label}${x.add === -10 ? " (-10)" : x.add === 10 ? " (+10)" : ""}`}
-                        active={pickNoodleSize.label === x.label}
-                        onPress={() => setPickNoodleSize(x)}
-                      />
-                    ))}
-                  </View>
+        {shopTab === "STATS" && (
+          <View style={{ flex: 1 }}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>สถิติวันนี้</Text>
+              <PillButton label="รีเฟรช" tone="soft" onPress={() => loadHistory()} />
+            </View>
 
-                  <Text style={[styles.modalSub, { marginTop: 8, fontWeight: "900" }]}>
-                    รวมราคา: ฿{thb(finalPrice)}
-                  </Text>
-                </>
-              )}
+            <View style={{ padding: 12 }}>
+              <View style={styles.card}>
+                <Text style={styles.title}>ยอดรวมวันนี้</Text>
+                <Text style={[styles.bigNumber, { marginTop: 6 }]}>฿{thb(todayStats.total)}</Text>
+                <Text style={styles.sub}>จำนวนบิล: {todayStats.count}</Text>
 
-              {(cat === "อาหาร" || cat === "ก๋วยเตี๋ยว") && (
-                <>
-                  <Text style={[styles.modalSection, { marginTop: 10 }]}>โน้ต</Text>
+                <View style={{ height: 1, backgroundColor: THEME.line, marginVertical: 12 }} />
+                <Text style={[styles.title, { fontSize: 16 }]}>Top เมนู</Text>
+                {todayStats.topArr.length === 0 ? (
+                  <Text style={styles.sub}>ยังไม่มีข้อมูล</Text>
+                ) : (
+                  todayStats.topArr.map(([name, qty]) => (
+                    <Text key={name} style={styles.orderLine}>
+                      • {name} — {qty}
+                    </Text>
+                  ))
+                )}
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Add Menu Modal (inline, no nested login modal) */}
+        {addMenuOpen && (
+          <View style={styles.overlay}>
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+              <ScrollView contentContainerStyle={styles.centerScroll} keyboardShouldPersistTaps="handled">
+                <View style={styles.card}>
+                  <Text style={styles.title}>เพิ่มเมนู</Text>
+
+                  <Text style={styles.label}>ชื่อ</Text>
+                  <TextInput value={mName} onChangeText={setMName} style={styles.input} onFocus={onFocusAny} onBlur={onBlurAny} />
+
+                  <Text style={styles.label}>คำอธิบาย</Text>
                   <TextInput
-                    value={pickNote}
-                    onChangeText={(t) => {
-                      setPickNote(t);
-                      smartWarn(t);
-                    }}
-                    placeholder="เช่น ไม่เผ็ด / ไม่ใส่ผัก / แพ้ถั่ว"
-                    placeholderTextColor="rgba(11,34,48,0.35)"
-                    style={[styles.input, { height: 70, textAlignVertical: "top" }]}
+                    value={mDesc}
+                    onChangeText={setMDesc}
+                    style={[styles.input, { minHeight: 80, textAlignVertical: "top" } as any]}
                     multiline
-                    blurOnSubmit={false}
+                    onFocus={onFocusAny}
+                    onBlur={onBlurAny}
                   />
-                  {noteWarn && (
-                    <Text style={{ marginTop: 6, color: THEME.danger, fontWeight: "900" }}>
-                      🔴 มีคำเสี่ยงแพ้อาหาร/คำต้องห้าม
-                    </Text>
-                  )}
-                </>
-              )}
 
-              <View style={{ height: 12 }} />
-
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                <Pressable style={styles.btnSoft} onPress={() => setPickerOpen(false)}>
-                  <Text style={styles.btnSoftText}>ยกเลิก</Text>
-                </Pressable>
-                <Pressable style={styles.btnPrimary} onPress={addPickedToCart}>
-                  <Text style={styles.btnPrimaryText}>เพิ่มตะกร้า</Text>
-                </Pressable>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
-    );
-  }
-  const ShopLoginScreen = React.memo(function ShopLoginScreen() {
-    const [localEmail, setLocalEmail] = useState("");
-    const [localPass, setLocalPass] = useState("");
-    const [submitting, setSubmitting] = useState(false);
-    const [err, setErr] = useState("");
-    const emailRef = useRef(null);
-    const passRef = useRef(null);
-
-    useEffect(() => {
-      if (shopLoginScreen) {
-        setLocalEmail("");
-        setLocalPass("");
-        setErr("");
-        setTimeout(() => emailRef.current?.focus?.(), 0);
-      }
-    }, [shopLoginScreen]);
-
-    const canSubmit = (localEmail || "").trim().length > 0 && (localPass || "").trim().length > 0;
-
-    async function doLogin() {
-      if (!canSubmit || submitting) return;
-      setSubmitting(true);
-      setErr("");
-      try {
-        const email = (localEmail || "").trim();
-        const password = (localPass || "").trim();
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-
-        setShopLoggedIn(true);
-        setMode("SHOP");
-        setTab("SHOP_ORDERS");
-        setShopLoginIntent(false);
-        setShopLoginScreen(false);
-        toast("เข้าสู่ระบบสำเร็จ");
-      } catch (e) {
-        setErr(String(e?.message || e || "เข้าสู่ระบบไม่สำเร็จ"));
-      } finally {
-        setSubmitting(false);
-      }
-    }
-  if (shopLoginScreen && !shopLoggedIn) {
-    return <ShopLoginScreen />;
-  }
-
-
-
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: "#0B2230" }}>
-        <View style={{ padding: 18, flex: 1, justifyContent: "center" }}>
-          <View style={{ alignItems: "center", marginBottom: 18 }}>
-            <Text style={{ color: "white", fontSize: 26, fontWeight: "800", letterSpacing: 0.2 }}>
-              ระบบร้านค้า
-            </Text>
-            <Text style={{ color: "rgba(255,255,255,0.75)", marginTop: 6 }}>
-              กรุณาเข้าสู่ระบบเพื่อใช้งานหน้าร้าน
-            </Text>
-          </View>
-
-          <View style={{ backgroundColor: "white", borderRadius: 18, padding: 16 }}>
-            <Text style={{ color: "#0B2230", fontWeight: "700", marginBottom: 8 }}>อีเมล</Text>
-            <TextInput
-              ref={emailRef}
-              value={localEmail}
-              onChangeText={setLocalEmail}
-              placeholder="example@email.com"
-              placeholderTextColor="rgba(11,34,48,0.35)"
-              style={styles.input}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoComplete="off"
-              textContentType="none"
-              importantForAutofill="no"
-              returnKeyType="next"
-              blurOnSubmit={false}
-              onSubmitEditing={() => setTimeout(() => passRef.current?.focus?.(), 0)}
-            />
-
-            <Text style={{ color: "#0B2230", fontWeight: "700", marginBottom: 8, marginTop: 10 }}>
-              รหัสผ่าน
-            </Text>
-            <TextInput
-              ref={passRef}
-              value={localPass}
-              onChangeText={setLocalPass}
-              placeholder="••••••••"
-              placeholderTextColor="rgba(11,34,48,0.35)"
-              style={styles.input}
-              secureTextEntry
-              autoComplete="off"
-              textContentType="none"
-              importantForAutofill="no"
-              returnKeyType="done"
-              blurOnSubmit={false}
-              onSubmitEditing={doLogin}
-            />
-
-            {!!err && (
-              <Text style={{ color: "#B42318", marginTop: 10, fontWeight: "600" }}>
-                {err}
-              </Text>
-            )}
-
-            <Pressable
-              style={[
-                styles.btnPrimary,
-                { marginTop: 14, opacity: canSubmit && !submitting ? 1 : 0.5 },
-              ]}
-              onPress={doLogin}
-            >
-              <Text style={styles.btnPrimaryText}>{submitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}</Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.btnGhost, { marginTop: 10 }]}
-              onPress={() => {
-                setShopLoginIntent(false);
-                setShopLoginScreen(false);
-                setMode("CUSTOMER");
-              }}
-            >
-              <Text style={styles.btnGhostText}>กลับโหมดลูกค้า</Text>
-            </Pressable>
-          </View>
-        </View>
-      </SafeAreaView>
-    );
-  });
-
-
-
-
-  
-  const LoginModal = React.memo(function LoginModal() {
-    const [localEmail, setLocalEmail] = useState(loginEmail);
-    const [localPass, setLocalPass] = useState(loginPass);
-    const emailRef = useRef(null);
-    const passRef = useRef(null);
-    const lastFocusRef = useRef("email");
-
-    // Keep local state in sync when modal opens
-    useEffect(() => {
-      if (loginOpen) {
-        setLocalEmail(loginEmail);
-        setLocalPass(loginPass);
-        // Focus email on open (web-friendly)
-        setTimeout(() => emailRef.current?.focus?.(), 0);
-      }
-    }, [loginOpen]);
-
-    return (
-      <Modal visible={loginOpen} transparent animationType="fade" onRequestClose={() => { setLoginOpen(false); setShopLoginIntent(false); }}>
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={{ width: "100%" }}
-          >
-            <View style={styles.modalCard}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={styles.modalTitle}>เข้าสู่ระบบร้านค้า</Text>
-                <Pressable style={styles.modalClose} onPress={() => { setLoginOpen(false); setShopLoginIntent(false); }}>
-                  <Text style={styles.modalCloseText}>✕</Text>
-                </Pressable>
-              </View>
-
-              <TextInput
-                ref={emailRef}
-                value={localEmail}
-                onChangeText={setLocalEmail}
-                placeholder="อีเมล"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoComplete="off"
-                textContentType="none"
-                importantForAutofill="no"
-                returnKeyType="next"
-                blurOnSubmit={false}
-                onSubmitEditing={() => {
-                  lastFocusRef.current = "pass";
-                  setTimeout(() => passRef.current?.focus?.(), 0);
-                }}
-                onFocus={() => {
-                  // If web tries to steal focus back to email, push it to pass
-                  if (lastFocusRef.current === "pass") {
-                    setTimeout(() => passRef.current?.focus?.(), 0);
-                  }
-                }}
-              />
-
-              <TextInput
-                ref={passRef}
-                value={localPass}
-                onChangeText={setLocalPass}
-                placeholder="รหัสผ่าน"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                secureTextEntry
-                autoComplete="off"
-                textContentType="none"
-                importantForAutofill="no"
-                returnKeyType="done"
-                blurOnSubmit={false}
-                onFocus={() => {
-                  lastFocusRef.current = "pass";
-                }}
-                onSubmitEditing={() => shopLogin(localEmail, localPass)}
-              />
-
-              <Pressable
-                style={[styles.btnPrimary, { marginTop: 10 }]}
-                onPress={() => shopLogin(localEmail, localPass)}
-              >
-                <Text style={styles.btnPrimaryText}>"เข้าสู่ระบบ"</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.btnGhost, { marginTop: 10 }]}
-                onPress={() => {
-                  setLoginOpen(false);
-                  setShopLoginIntent(false);
-                  setMode("CUSTOMER");
-                }}
-              >
-                <Text style={styles.btnGhostText}>กลับโหมดลูกค้า</Text>
-              </Pressable>
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
-    );
-  });
-
-
-
-
-  function ShopOrderPreviewModal() {
-    if (!shopPreviewOrder) return null;
-    const items = parseItems(shopPreviewOrder.items_json);
-    return (
-      <Modal visible={shopPreviewOpen} transparent animationType="fade">
-        <View style={styles.modalBack}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>🧾 ออเดอร์โต๊ะ {shopPreviewOrder.table_no}</Text>
-            <Text style={styles.modalSub}>รวม ฿{thb(shopPreviewOrder.total_price)}</Text>
-
-            <View style={{ height: 10 }} />
-
-            <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="handled">
-              {items.length === 0 ? (
-                <Text style={{ color: THEME.sub }}>ไม่มีรายการ</Text>
-              ) : (
-                items.map((it, idx) => (
-                  <View key={idx} style={styles.previewRow}>
-                    <Text style={{ flex: 1, fontWeight: "900", color: THEME.text }}>
-                      {it.name} x{it.qty}
-                    </Text>
-                    <Text style={{ color: THEME.sub, fontWeight: "900" }}>฿{thb(it.final_price)}</Text>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.label}>หมวด</Text>
+                      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                        {(["อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"] as const).map((c) => (
+                          <Chip key={c} label={c} active={mCategory === c} onPress={() => setMCategory(c)} />
+                        ))}
+                      </View>
+                    </View>
                   </View>
-                ))
-              )}
-            </ScrollView>
 
-            <View style={{ height: 12 }} />
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.label}>ราคา</Text>
+                      <TextInput
+                        value={mPrice}
+                        onChangeText={setMPrice}
+                        keyboardType="numeric"
+                        style={styles.input}
+                        onFocus={onFocusAny}
+                        onBlur={onBlurAny}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.label}>สต็อก</Text>
+                      <TextInput
+                        value={mStock}
+                        onChangeText={setMStock}
+                        keyboardType="numeric"
+                        style={styles.input}
+                        onFocus={onFocusAny}
+                        onBlur={onBlurAny}
+                      />
+                    </View>
+                  </View>
 
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable style={styles.btnSoft} onPress={() => setShopPreviewOpen(false)}>
-                <Text style={styles.btnSoftText}>ปิด</Text>
-              </Pressable>
-              {shopPreviewOrder.status === "NEW" && (
-                <Pressable
-                  style={styles.btnOk}
-                  onPress={async () => {
-                    await acceptOrder(shopPreviewOrder);
-                    setShopPreviewOpen(false);
-                  }}
-                >
-                  <Text style={styles.btnOkText}>รับออเดอร์</Text>
-                </Pressable>
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
-  }
+                  <Text style={styles.label}>รูป (URL)</Text>
+                  <TextInput
+                    value={mImageUrl}
+                    onChangeText={setMImageUrl}
+                    style={styles.input}
+                    onFocus={onFocusAny}
+                    onBlur={onBlurAny}
+                  />
 
-  function AddMenuModal() {
-    return (
-      <Modal visible={addMenuOpen} transparent animationType="fade">
-        <View style={styles.modalBack}>
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalCard}>
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.modalTitle}>➕ เพิ่มเมนูใหม่</Text>
-              <Text style={styles.modalSub}>ใส่ข้อมูลให้ครบ (เก็บใน Supabase)</Text>
-
-              <TextInput
-                value={mName}
-                onChangeText={setMName}
-                placeholder="ชื่อเมนู"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                blurOnSubmit={false}
-              />
-
-              <TextInput
-                value={mDesc}
-                onChangeText={setMDesc}
-                placeholder="คำอธิบาย (ไม่ใส่ก็ได้)"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                blurOnSubmit={false}
-              />
-
-              <Text style={[styles.modalSection, { marginTop: 10 }]}>หมวดหมู่</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-                <View style={styles.optionRow}>
-                  {["อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"].map((c) => (
-                    <Chip key={c} label={c} active={mCategory === c} onPress={() => setMCategory(c)} />
-                  ))}
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                    <PillButton label="ยกเลิก" tone="soft" onPress={() => setAddMenuOpen(false)} />
+                    <View style={{ flex: 1 }} />
+                    <PillButton label="บันทึก" tone="primary" onPress={addMenu} />
+                  </View>
                 </View>
               </ScrollView>
+            </KeyboardAvoidingView>
+          </View>
+        )}
+      </SafeAreaView>
+    );
+  }
 
-              <TextInput
-                value={mPrice}
-                onChangeText={(t) => setMPrice(t.replace(/[^0-9]/g, ""))}
-                placeholder="ราคา (บาท)"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                keyboardType="number-pad"
-                blurOnSubmit={false}
-              />
+  // -------------------- CUSTOMER --------------------
+  return (
+    <SafeAreaView style={styles.root}>
+      {Header}
 
-              <TextInput
-                value={mStock}
-                onChangeText={(t) => setMStock(t.replace(/[^0-9]/g, ""))}
-                placeholder="สต็อกเริ่มต้น (เช่น 10)"
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                keyboardType="number-pad"
-                blurOnSubmit={false}
-              />
+      <View style={styles.tabRow}>
+        <Chip label="เมนู" active={customerTab === "MENU"} onPress={() => setCustomerTab("MENU")} />
+        <Chip label={`ตะกร้า (${cart.reduce((a, x) => a + x.qty, 0)})`} active={customerTab === "CART"} onPress={() => setCustomerTab("CART")} />
+        <Chip label="สถานะ" active={customerTab === "STATUS"} onPress={() => setCustomerTab("STATUS")} />
+        <View style={{ flex: 1 }} />
+        <PillButton label="Reset" tone="soft" onPress={resetSession} />
+      </View>
 
-              <TextInput
-                value={mImageUrl}
-                onChangeText={setMImageUrl}
-                placeholder="ลิงก์รูป (image_url) เช่น https://..."
-                placeholderTextColor="rgba(11,34,48,0.35)"
-                style={styles.input}
-                autoCapitalize="none"
-                blurOnSubmit={false}
-              />
+      {/* Table lock */}
+      <View style={{ paddingHorizontal: 12 }}>
+        <View style={styles.cardRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>โต๊ะ</Text>
+            <TextInput
+              value={tableNo}
+              onChangeText={setTableNo}
+              placeholder="เช่น 5"
+              style={styles.input}
+              keyboardType="numeric"
+              editable={!tableLocked}
+              onFocus={onFocusAny}
+              onBlur={onBlurAny}
+            />
+          </View>
+          <View style={{ width: 10 }} />
+          <View style={{ justifyContent: "flex-end" }}>
+            {tableLocked ? (
+              <PillButton label="ล็อกแล้ว" tone="ok" disabled />
+            ) : (
+              <PillButton label="ล็อกโต๊ะ" tone="primary" onPress={lockTable} />
+            )}
+          </View>
+        </View>
+      </View>
 
-              <View style={{ height: 12 }} />
+      {customerTab === "MENU" && (
+        <View style={{ flex: 1 }}>
+          <View style={{ paddingHorizontal: 12, marginTop: 8 }}>
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="ค้นหาเมนู..."
+              style={[styles.input, { backgroundColor: THEME.card }]}
+              onFocus={onFocusAny}
+              onBlur={onBlurAny}
+            />
+          </View>
 
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                <Pressable style={styles.btnSoft} onPress={() => setAddMenuOpen(false)}>
-                  <Text style={styles.btnSoftText}>ยกเลิก</Text>
-                </Pressable>
-                <Pressable style={styles.btnPrimary} onPress={addMenuToSupabase}>
-                  <Text style={styles.btnPrimaryText}>บันทึกเมนู</Text>
-                </Pressable>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll}>
+            {CATEGORIES.map((c) => (
+              <Chip key={c} label={c} active={category === c} onPress={() => setCategory(c)} />
+            ))}
+          </ScrollView>
+
+          {loadingMenu ? (
+            <View style={styles.center}>
+              <ActivityIndicator />
+            </View>
+          ) : (
+            <FlatList
+              data={filteredMenu}
+              keyExtractor={(it) => it.id}
+              contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+              renderItem={({ item }) => (
+                <View style={styles.menuCard}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.menuName}>{item.name}</Text>
+                      {!!item.desc && <Text style={styles.menuDesc}>{item.desc}</Text>}
+                      <Text style={styles.menuMeta}>
+                        {normalizeCategory(item)} • ฿{thb(item.price)} • สต็อก {Number(item.stock || 0)}
+                      </Text>
+                    </View>
+                    <PillButton
+                      label={Number(item.stock || 0) > 0 ? "เลือก" : "หมด"}
+                      tone={Number(item.stock || 0) > 0 ? "primary" : "soft"}
+                      disabled={Number(item.stock || 0) <= 0}
+                      onPress={() => openPicker(item)}
+                    />
+                  </View>
+                </View>
+              )}
+              ListEmptyComponent={
+                <View style={{ padding: 18 }}>
+                  <Text style={styles.sub}>ไม่พบเมนูที่ค้นหา</Text>
+                </View>
+              }
+            />
+          )}
+        </View>
+      )}
+
+      {customerTab === "CART" && (
+        <View style={{ flex: 1 }}>
+          <FlatList
+            data={cart}
+            keyExtractor={(it) => it.cart_key}
+            contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+            renderItem={({ item }) => (
+              <View style={styles.orderCard}>
+                <Text style={styles.menuName}>{item.name}</Text>
+                <Text style={styles.menuMeta}>
+                  {item.protein ? `${item.protein}` : ""}
+                  {item.noodle ? ` • ${item.noodle}` : ""}
+                  {item.noodle_size ? ` • ${item.noodle_size}` : ""}
+                  {item.note ? ` • ${item.note}` : ""}
+                </Text>
+                <Text style={styles.orderSub}>฿{thb(item.final_price)} / ชิ้น</Text>
+
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 10, alignItems: "center" }}>
+                  <PillButton label="-" tone="soft" onPress={() => updateQty(item.cart_key, -1)} />
+                  <Text style={{ fontWeight: "900", color: THEME.text }}>x{item.qty}</Text>
+                  <PillButton label="+" tone="soft" onPress={() => updateQty(item.cart_key, +1)} />
+                  <View style={{ flex: 1 }} />
+                  <PillButton label="ลบ" tone="danger" onPress={() => removeCart(item.cart_key)} />
+                </View>
+              </View>
+            )}
+            ListEmptyComponent={
+              <View style={{ padding: 18 }}>
+                <Text style={styles.sub}>ตะกร้าว่าง</Text>
+              </View>
+            }
+          />
+
+          <View style={styles.bottomBar}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.orderSub}>รวม</Text>
+              <Text style={styles.bigNumber}>฿{thb(cartTotal)}</Text>
+            </View>
+            <PillButton label="สั่งอาหาร" tone="primary" onPress={placeOrder} disabled={!tableLocked || cart.length === 0} />
+          </View>
+        </View>
+      )}
+
+      {customerTab === "STATUS" && (
+        <View style={{ flex: 1 }}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>สถานะออเดอร์</Text>
+            <PillButton label="รีเฟรช" tone="soft" onPress={() => loadOrders()} disabled={loadingOrders} />
+          </View>
+
+          {loadingOrders ? (
+            <View style={styles.center}>
+              <ActivityIndicator />
+            </View>
+          ) : (
+            <FlatList
+              data={orders}
+              keyExtractor={(it) => it.order_id}
+              contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+              renderItem={({ item }) => (
+                <View style={styles.orderCard}>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <Text style={styles.orderTitle}>โต๊ะ {item.table_no}</Text>
+                    <View style={{ flex: 1 }} />
+                    <Text
+                      style={[
+                        styles.badge,
+                        item.status === "NEW"
+                          ? { backgroundColor: THEME.warn }
+                          : item.status === "ACCEPTED"
+                          ? { backgroundColor: THEME.primary }
+                          : item.status === "SERVED"
+                          ? { backgroundColor: THEME.ok }
+                          : { backgroundColor: THEME.danger },
+                      ]}
+                    >
+                      {item.status === "CANCELLED" ? "ยกเลิกแล้ว" : item.status}
+                    </Text>
+                  </View>
+                  <Text style={styles.orderSub}>รวม ฿{thb(item.total_price || 0)}</Text>
+                </View>
+              )}
+              ListEmptyComponent={
+                <View style={{ padding: 18 }}>
+                  <Text style={styles.sub}>ยังไม่มีออเดอร์ใน session นี้</Text>
+                </View>
+              }
+            />
+          )}
+        </View>
+      )}
+
+      {/* Picker Overlay */}
+      {pickerOpen && pickedMenu && (
+        <View style={styles.overlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+            <ScrollView contentContainerStyle={styles.centerScroll} keyboardShouldPersistTaps="handled">
+              <View style={styles.card}>
+                <Text style={styles.title}>{pickedMenu.name}</Text>
+                <Text style={styles.sub}>เลือกตัวเลือก แล้วกดเพิ่มลงตะกร้า</Text>
+
+                <Text style={styles.label}>โปรตีน</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll}>
+                  {FOOD_PROTEIN.map((p) => (
+                    <Chip
+                      key={p.label}
+                      label={p.add ? `${p.label} (+${p.add})` : p.label}
+                      active={pickProtein.label === p.label}
+                      onPress={() => setPickProtein(p)}
+                    />
+                  ))}
+                </ScrollView>
+
+                <Text style={styles.label}>เส้น</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll}>
+                  {NOODLES.map((n) => (
+                    <Chip key={n} label={n} active={pickNoodle === n} onPress={() => setPickNoodle(n)} />
+                  ))}
+                </ScrollView>
+
+                <Text style={styles.label}>ขนาด</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll}>
+                  {NOODLE_SIZES.map((s) => (
+                    <Chip
+                      key={s.label}
+                      label={s.add ? `${s.label} (${s.add > 0 ? "+" : ""}${s.add})` : s.label}
+                      active={pickNoodleSize.label === s.label}
+                      onPress={() => setPickNoodleSize(s)}
+                    />
+                  ))}
+                </ScrollView>
+
+                <Text style={styles.label}>โน้ต (ถ้ามี)</Text>
+                <TextInput
+                  value={pickNote}
+                  onChangeText={setPickNote}
+                  placeholder="เช่น ไม่เผ็ด / ไม่ใส่ผัก / แพ้ถั่ว"
+                  style={styles.input}
+                  onFocus={onFocusAny}
+                  onBlur={onBlurAny}
+                />
+
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                  <PillButton
+                    label="ยกเลิก"
+                    tone="soft"
+                    onPress={() => {
+                      setPickerOpen(false);
+                      setPickedMenu(null);
+                    }}
+                  />
+                  <View style={{ flex: 1 }} />
+                  <PillButton label="เพิ่มลงตะกร้า" tone="primary" onPress={addToCart} />
+                </View>
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
         </View>
-      </Modal>
-    );
-  }
-
-  let content = null;
-
-  if (mode === "CUSTOMER") {
-    if (!tableLocked) content = <CustomerTableGate />;
-    else if (tab === "MENU") content = <CustomerMenu />;
-    else if (tab === "CART") content = <CustomerCart />;
-    else content = <CustomerStatus />;
-  } else {
-    if (!shopLoggedIn) {
-      content = (
-        <View style={styles.gateWrap}>
-          <View style={styles.gateCard}>
-            <View style={{ alignItems: "center" }}>
-              <Image source={require("../assets/logo.jpeg")} style={styles.logoBig} />
-              <Text style={styles.brandBig}>The Wood</Text>
-              <Text style={styles.brandSub}>โหมดร้านค้า</Text>
-            </View>
-
-            <Pressable style={styles.btnPrimary} onPress={() => setLoginOpen(true)}>
-              <Text style={styles.btnPrimaryText}>เข้าสู่ระบบ</Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.btnSoft}
-              onPress={() => {
-                setMode("CUSTOMER");
-                setTab("MENU");
-              }}
-            >
-              <Text style={styles.btnSoftText}>กลับไปลูกค้า</Text>
-            </Pressable>
-          </View>
-        </View>
-      );
-    } else {
-      if (tab === "SHOP_ORDERS") content = <ShopOrders />;
-      else if (tab === "SHOP_STOCK") content = <ShopStock />;
-      else if (tab === "SHOP_HISTORY") content = <ShopHistory />;
-      else content = <ShopStats />;
-    }
-  }
-
-  return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="dark-content" />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        {content}
-        {mode === "CUSTOMER" && tableLocked && <BottomNavCustomer />}
-        <MenuPickerModal />
-        <LoginModal />
-        <ShopOrderPreviewModal />
-        <AddMenuModal />
-      </KeyboardAvoidingView>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: THEME.bg },
+  root: { flex: 1, backgroundColor: THEME.bg },
 
-  headerBar: {
-    paddingHorizontal: 14,
+  header: {
+    paddingHorizontal: 12,
     paddingTop: 10,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.line,
-    backgroundColor: THEME.card,
+    paddingBottom: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  headerTitle: { fontSize: 18, fontWeight: "900", color: THEME.text },
-  headerSub: { marginTop: 2, color: THEME.sub, fontWeight: "700" },
+  hTitle: { fontSize: 18, fontWeight: "900", color: THEME.text },
+  hSub: { marginTop: 2, color: THEME.sub, fontWeight: "700" },
 
-  logo: { width: 34, height: 34, borderRadius: 10 },
-  logoBig: { width: 88, height: 88, borderRadius: 22 },
-  brandBig: { marginTop: 10, fontSize: 26, fontWeight: "900", color: THEME.text },
-  brandSub: { marginTop: 4, color: THEME.sub, fontWeight: "800" },
-
-  iconBtn: {
+  tabRow: {
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
+    paddingBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
   },
-  iconBtnText: { fontWeight: "900", color: THEME.text },
-
-  gateWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: 16 },
-  gateCard: {
-    width: "100%",
-    maxWidth: 520,
-    backgroundColor: THEME.card,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    borderRadius: 22,
-    padding: 16,
-  },
-  gateTitle: { fontSize: 20, fontWeight: "900", color: THEME.text },
-  gateSub: { marginTop: 6, color: THEME.sub, fontWeight: "700" },
-
-  shopFloatingBtn: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    zIndex: 50,
-  },
-  shopFloatingText: { fontWeight: "900", color: THEME.text },
 
   chip: {
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: THEME.line,
+    backgroundColor: THEME.card,
+    maxWidth: 180,
   },
-  chipIdle: { backgroundColor: THEME.soft },
-  chipActive: { backgroundColor: THEME.primary2 },
   chipText: { fontWeight: "900" },
-  chipTextIdle: { color: THEME.text },
-  chipTextActive: { color: "#fff" },
-
-  input: {
-    marginTop: 10,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: THEME.text,
-    fontWeight: "800",
-  },
-
-  btnPrimary: {
-    marginTop: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 16,
-    backgroundColor: THEME.primary2,
-    alignItems: "center",
-  },
-  btnPrimaryText: { color: "#fff", fontWeight: "900", fontSize: 16 },
-
-  btnSoft: {
-    marginTop: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 16,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    alignItems: "center",
-  },
-  btnSoftText: { color: THEME.text, fontWeight: "900" },
-
-  btnOk: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: THEME.ok,
-  },
-  btnOkText: { color: "#fff", fontWeight: "900" },
-
-  btnDanger: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: THEME.danger,
-  },
-  btnDangerText: { color: "#fff", fontWeight: "900" },
+  chipScroll: { paddingHorizontal: 12, paddingBottom: 8, gap: 8, alignItems: "center" },
 
   card: {
     backgroundColor: THEME.card,
+    borderRadius: 18,
+    padding: 16,
     borderWidth: 1,
     borderColor: THEME.line,
-    borderRadius: 22,
-    padding: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
+  cardRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
+
+  title: { fontSize: 18, fontWeight: "900", color: THEME.text },
+  sub: { marginTop: 4, color: THEME.sub, fontWeight: "700" },
+  label: { marginTop: 10, marginBottom: 6, fontWeight: "900", color: THEME.text },
+  input: {
+    borderWidth: 1,
+    borderColor: THEME.line,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#fff",
+    color: THEME.text,
+  },
+
+  btn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnText: { fontWeight: "900" },
+
+  bigBtn: {
+    marginTop: 14,
+    backgroundColor: THEME.primary2,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  bigBtnText: { fontWeight: "900", color: "#fff" },
+
+  sectionHeader: {
+    paddingHorizontal: 12,
+    paddingTop: 6,
+    paddingBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sectionTitle: { fontSize: 16, fontWeight: "900", color: THEME.text, flex: 1 },
 
   menuCard: {
     backgroundColor: THEME.card,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    borderRadius: 22,
-    padding: 12,
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 12,
-  },
-  menuImg: { width: 78, height: 78, borderRadius: 18, backgroundColor: THEME.soft },
-  menuImgEmpty: {
-    width: 78,
-    height: 78,
     borderRadius: 18,
-    backgroundColor: THEME.soft,
-    alignItems: "center",
-    justifyContent: "center",
+    padding: 14,
     borderWidth: 1,
     borderColor: THEME.line,
+    marginBottom: 10,
   },
   menuName: { fontSize: 16, fontWeight: "900", color: THEME.text },
-  menuSub: { marginTop: 3, color: THEME.sub, fontWeight: "700" },
-  menuMetaRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
-  menuPrice: { fontSize: 16, fontWeight: "900", color: THEME.text },
-  menuStock: { color: THEME.sub, fontWeight: "800" },
-  outText: { marginTop: 6, color: THEME.danger, fontWeight: "900" },
+  menuDesc: { marginTop: 4, color: THEME.sub, fontWeight: "700" },
+  menuMeta: { marginTop: 6, color: THEME.sub, fontWeight: "800" },
 
-  cartRow: {
-    flexDirection: "row",
-    gap: 10,
-    padding: 12,
-    borderRadius: 18,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-  },
-  cartName: { fontWeight: "900", color: THEME.text },
-  cartSub: { marginTop: 2, color: THEME.sub, fontWeight: "700" },
-
-  qtyBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
+  orderCard: {
     backgroundColor: THEME.card,
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
     borderColor: THEME.line,
-    alignItems: "center",
-    justifyContent: "center",
+    marginBottom: 10,
   },
-  qtyBtnText: { fontWeight: "900", color: THEME.text, fontSize: 16 },
-
-  delBtn: {
+  orderTitle: { fontSize: 16, fontWeight: "900", color: THEME.text },
+  orderSub: { marginTop: 4, color: THEME.sub, fontWeight: "800" },
+  orderLine: { color: THEME.text, fontWeight: "700" },
+  badge: {
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: THEME.danger,
+    paddingVertical: 6,
+    borderRadius: 999,
+    overflow: "hidden",
+    color: "#fff",
+    fontWeight: "900",
   },
-  delBtnText: { color: "#fff", fontWeight: "900" },
 
-  totalRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  totalLabel: { color: THEME.sub, fontWeight: "900" },
-  totalValue: { fontSize: 20, fontWeight: "900", color: THEME.text },
-
-  orderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 12,
+  stockCard: {
+    backgroundColor: THEME.card,
     borderRadius: 18,
-    backgroundColor: THEME.soft,
+    padding: 14,
     borderWidth: 1,
     borderColor: THEME.line,
+    marginBottom: 10,
   },
-  orderTitle: { fontWeight: "900", color: THEME.text },
-  orderSub: { marginTop: 2, color: THEME.sub, fontWeight: "700" },
-  orderBadge: { fontSize: 18 },
+  stockName: { fontSize: 16, fontWeight: "900", color: THEME.text },
+  stockSub: { marginTop: 4, color: THEME.sub, fontWeight: "800" },
+  stockQty: { fontSize: 22, fontWeight: "900", color: THEME.text },
 
-  bottomNav: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: THEME.card,
+  bottomBar: {
     borderTopWidth: 1,
     borderTopColor: THEME.line,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    padding: 12,
     flexDirection: "row",
-    gap: 8,
-    justifyContent: "space-between",
-  },
-  navBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 14,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
     alignItems: "center",
-  },
-  navText: { fontWeight: "900", color: THEME.text },
-
-  modalBack: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-  },
-  modalCard: {
-    width: "100%",
-    maxWidth: 560,
-    backgroundColor: THEME.card,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    borderRadius: 22,
-    padding: 14,
-  },
-  modalTitle: { fontSize: 18, fontWeight: "900", color: THEME.text },
-  modalSub: { marginTop: 6, color: THEME.sub, fontWeight: "700" },
-  modalSection: { marginTop: 10, fontWeight: "900", color: THEME.text },
-
-  optionRow: { flexDirection: "row", gap: 8, marginTop: 8, paddingHorizontal: 2 },
-
-  shopTabs: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 10,
+    gap: 10,
     backgroundColor: THEME.bg,
   },
-  shopTabBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 16,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-    alignItems: "center",
+  bigNumber: { fontSize: 20, fontWeight: "900", color: THEME.text },
+
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    justifyContent: "center",
   },
-  shopTabBtnActive: { backgroundColor: THEME.primary2 },
-  shopTabText: { fontWeight: "900", color: THEME.text },
-  shopTabTextActive: { color: "#fff" },
-
-  sectionTitle: { fontWeight: "900", color: THEME.text, fontSize: 16 },
-
-  shopOrderCard: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-    padding: 12,
-    borderRadius: 18,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-  },
-
-  stockRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 12,
-    borderRadius: 18,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-  },
-
-  moneyBig: { fontSize: 34, fontWeight: "900", color: THEME.text, marginTop: 6 },
-
-  topRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 10,
-    borderRadius: 16,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.line,
-  },
-
-  previewRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.line,
-  },
+  centerScroll: { flexGrow: 1, justifyContent: "center", padding: 16 },
 });
