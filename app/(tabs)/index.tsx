@@ -25,21 +25,32 @@ import {
 } from "react-native";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = "https://qiurgxsipiztibtinxrk.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpdXJneHNpcGl6dGlidGlueHJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg0NDQzNDUsImV4cCI6MjA4NDAyMDM0NX0.mPra9_UXUk0ntO3448uEnsK_sIOjemQEIBzvSTn9FBs";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+function getSupabase() {
+  // Use Expo public env vars (works on Web + native)
+  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anon = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) {
+    throw new Error(
+      "Missing Supabase env. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env"
+    );
+  }
+  return createClient(url, anon);
+}
 
+const supabase = getSupabase();
+
+// The Wood - Minimal Wood Theme (warm, light brown)
 const THEME = {
-  bg: "#F6FBFF",
-  card: "#FFFFFF",
-  line: "rgba(15, 60, 110, 0.12)",
-  text: "#0B2230",
-  sub: "rgba(11,34,48,0.68)",
-  soft: "#EAF4FF",
-  primary2: "#2E7DFF",
-  ok: "#1FBF75",
-  warn: "#FFB020",
-  danger: "#FF4D4D",
+  bg: "#F7F1E6", // warm cream
+  card: "#FFF8EE", // soft paper
+  line: "rgba(139, 107, 79, 0.22)",
+  text: "#2B1E14", // dark brown
+  sub: "rgba(43, 30, 20, 0.65)",
+  soft: "#F0E4D6", // light tan
+  primary2: "#B88A5A", // wood brown
+  ok: "#2E7D32",
+  warn: "#C77D2B",
+  danger: "#C62828",
 };
 
 const CATEGORIES = ["ทั้งหมด", "อาหาร", "ก๋วยเตี๋ยว", "เครื่องดื่ม"];
@@ -484,7 +495,7 @@ export default function CustomerScreen() {
                       markTyping();
                     }}
                     placeholder="เช่น ไม่เผ็ด / ไม่ใส่ผัก"
-                    placeholderTextColor="rgba(11,34,48,0.35)"
+                    placeholderTextColor="rgba(43, 30, 20, 0.35)"
                     style={[styles.input, { height: 70, textAlignVertical: "top" }]}
                     multiline
                     blurOnSubmit={false}
@@ -533,7 +544,7 @@ export default function CustomerScreen() {
                 markTyping();
               }}
               placeholder="เช่น 1"
-              placeholderTextColor="rgba(11,34,48,0.35)"
+              placeholderTextColor="rgba(43, 30, 20, 0.35)"
               style={styles.input}
               keyboardType="number-pad"
               blurOnSubmit={false}
