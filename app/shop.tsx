@@ -36,6 +36,7 @@ export default function Shop() {
 
   const [tab, setTab] = useState<"ORDERS" | "MENU">("ORDERS");
   const [loadingOrders, setLoadingOrders] = useState(false);
+  const [ordersView, setOrdersView] = useState<"ACTIVE" | "HISTORY">("ACTIVE");
   const [loadingMenu, setLoadingMenu] = useState(false);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -73,7 +74,7 @@ export default function Shop() {
     const { data, error } = await supabase
       .from("orders")
       .select(ORDER_COLS)
-      .in("status", ["NEW", "ACCEPTED"])
+      .in("status", ordersView === "ACTIVE" ? ["NEW", "ACCEPTED"] : ["SERVED", "CANCELLED"])
       .order("created_at", { ascending: false });
     setLoadingOrders(false);
     if (error) return;
@@ -118,8 +119,10 @@ export default function Shop() {
   const serveOrder = async (id: number) => {
     const { error } = await supabase.from("orders").update({ status: "SERVED" }).eq("id", id);
     if (error) return Alert.alert("เสิร์ฟไม่สำเร็จ", error.message);
-    await supabase.from("served_history").insert([{ order_id: id }]).catch(() => {});
-    loadOrders();
+    try {
+      await supabase.from("served_history").insert([{ order_id: id }]);
+    } catch {}
+loadOrders();
   };
 
   const softDeleteMenu = async (id: number) => {
@@ -178,7 +181,22 @@ export default function Shop() {
       </View>
 
       {tab === "ORDERS" ? (
-        <FlatList
+        <View style={{ flex: 1 }}>
+          <View style={s.orderHead}>
+            <View style={s.tabs}>
+              <Pressable style={[s.tab2, ordersView === "ACTIVE" && s.tab2On]} onPress={() => setOrdersView("ACTIVE")}>
+                <Text style={[s.tab2Text, ordersView === "ACTIVE" && s.tab2TextOn]}>กำลังทำ</Text>
+              </Pressable>
+              <Pressable style={[s.tab2, ordersView === "HISTORY" && s.tab2On]} onPress={() => setOrdersView("HISTORY")}>
+                <Text style={[s.tab2Text, ordersView === "HISTORY" && s.tab2TextOn]}>ประวัติ</Text>
+              </Pressable>
+            </View>
+            <Text style={s.sub}>
+              {ordersView === "ACTIVE" ? "แสดง: NEW / ACCEPTED" : "แสดง: SERVED / CANCELLED"}
+            </Text>
+          </View>
+
+          <FlatList
           data={orders}
           keyExtractor={(x) => String(x.id)}
           contentContainerStyle={{ paddingBottom: 120 }}
@@ -190,6 +208,27 @@ export default function Shop() {
                 <Text style={s.badge}>{item.status}</Text>
               </View>
               <Text style={s.sub}>รวม {formatTHB(Number(item.total_thb || 0))}</Text>
+
+              <View style={s.itemsBox}>
+                {(Array.isArray(item.items) ? item.items : []).slice(0, 80).map((it: any, i: number) => {
+                  const qty = Number(it?.qty || 0);
+                  const name = String(it?.name_th || "");
+                  const note = String(it?.note || "").trim();
+                  const opt = fmtOptions(it?.options);
+                  const unit = Number(it?.unit_total_thb || 0);
+                  const lineTotal = qty * unit;
+                  return (
+                    <View key={i} style={s.itemRow}>
+                      <Text style={s.itemText}>
+                        {qty}× {name}
+                        {opt}
+                        {note ? ` • หมายเหตุ: ${note}` : ""}
+                      </Text>
+                      <Text style={s.itemPrice}>{formatTHB(lineTotal)}</Text>
+                    </View>
+                  );
+                })}
+              </View>
 
               <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
                 {item.status === "NEW" ? (
@@ -206,6 +245,7 @@ export default function Shop() {
             </View>
           )}
         />
+        </View>
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
           <View style={s.card}>
@@ -286,4 +326,10 @@ const s = StyleSheet.create({
   input: { borderWidth: 1, borderColor: C.line, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, color: C.text, backgroundColor: "#FFFDF9", marginTop: 10 },
   small: { width: 36, height: 36, borderRadius: 12, backgroundColor: C.soft, borderWidth: 1, borderColor: C.line, alignItems: "center", justifyContent: "center" },
   smallText: { color: C.text, fontWeight: "900", fontSize: 18 },
+  tabs: { flexDirection: "row", gap: 8, marginTop: 10, marginBottom: 6 },
+  tab: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: C.line, backgroundColor: C.soft },
+  tabActive: { backgroundColor: C.primary, borderColor: C.primary },
+  tabText: { color: C.text, fontWeight: "700" },
+  tabTextActive: { color: "#fff" },
+
 });

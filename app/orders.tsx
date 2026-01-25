@@ -1,3 +1,10 @@
+  const fmtOptions = (options: any) => {
+    if (!options || typeof options !== "object") return "";
+    const parts = Object.entries(options)
+      .filter(([_, v]) => String(v ?? "").trim().length > 0)
+      .map(([k, v]) => `${k}: ${v}`);
+    return parts.length ? ` • ${parts.join(", ")}` : "";
+  };
 import React, { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, FlatList, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
@@ -22,6 +29,7 @@ export default function OrdersScreen() {
   const router = useRouter();
   const { tableNo, sessionId, isTyping } = useApp();
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<"ACTIVE" | "HISTORY">("ACTIVE");
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const sigRef = useRef("");
 
@@ -50,12 +58,22 @@ export default function OrdersScreen() {
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
-  }, [sessionId, isTyping]);
+  }, [sessionId, isTyping, view]);
 
   return (
     <View style={s.page}>
       <View style={s.head}>
         <Text style={s.h1}>สถานะออเดอร์</Text>
+
+        <View style={s.tabs}>
+          <Pressable style={[s.tab, view === "ACTIVE" && s.tabActive]} onPress={() => setView("ACTIVE")}>
+            <Text style={[s.tabText, view === "ACTIVE" && s.tabTextActive]}>กำลังทำ</Text>
+          </Pressable>
+          <Pressable style={[s.tab, view === "HISTORY" && s.tabActive]} onPress={() => setView("HISTORY")}>
+            <Text style={[s.tabText, view === "HISTORY" && s.tabTextActive]}>ประวัติ</Text>
+          </Pressable>
+        </View>
+
         <Pressable style={s.btn2} onPress={() => router.replace("/menu")}>
           <Text style={s.btn2Text}>กลับเมนู</Text>
         </Pressable>
@@ -78,6 +96,27 @@ export default function OrdersScreen() {
                 <Text style={s.badge}>{item.status}</Text>
               </View>
               <Text style={s.sub}>รวม {formatTHB(Number(item.total_thb || 0))}</Text>
+
+              <View style={s.itemsBox}>
+                {(Array.isArray(item.items) ? item.items : []).slice(0, 50).map((it: any, i: number) => {
+                  const qty = Number(it?.qty || 0);
+                  const name = String(it?.name_th || "");
+                  const note = String(it?.note || "").trim();
+                  const opt = fmtOptions(it?.options);
+                  const unit = Number(it?.unit_total_thb || 0);
+                  const lineTotal = qty * unit;
+                  return (
+                    <View key={i} style={s.itemRow}>
+                      <Text style={s.itemText}>
+                        {qty}× {name}
+                        {opt}
+                        {note ? ` • หมายเหตุ: ${note}` : ""}
+                      </Text>
+                      <Text style={s.itemPrice}>{formatTHB(lineTotal)}</Text>
+                    </View>
+                  );
+                })}
+              </View>
             </View>
           )}
         />
@@ -98,4 +137,10 @@ const s = StyleSheet.create({
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   title: { color: C.text, fontWeight: "900", fontSize: 16 },
   badge: { color: "#fff", backgroundColor: C.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, overflow: "hidden", fontWeight: "900" },
+  tabs: { flexDirection: "row", gap: 8, marginTop: 10 },
+  tab: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: C.line, backgroundColor: C.soft },
+  tabActive: { backgroundColor: C.primary, borderColor: C.primary },
+  tabText: { color: C.text, fontWeight: "700" },
+  tabTextActive: { color: "#fff" },
+
 });
